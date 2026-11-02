@@ -112,9 +112,11 @@ def test_mouse_driven_drag_updates_model_and_undo_redo():
     application.processEvents()
     moved = (window.project.cabinet.position_x, window.project.cabinet.position_y)
     assert moved == expected
-    pixel_tolerance_mm = max(1, ceil(1 / view._scale))
-    assert abs(moved[0] - 1900) <= pixel_tolerance_mm
-    assert abs(moved[1] - 2200) <= pixel_tolerance_mm
+    # Both press and release scene positions pass through integer viewport
+    # coordinates, so their sub-pixel round-trip errors can add together.
+    round_trip_tolerance_mm = max(1, ceil(2 / view._scale))
+    assert abs(moved[0] - 1900) <= round_trip_tolerance_mm
+    assert abs(moved[1] - 2200) <= round_trip_tolerance_mm
     window.undo_action.trigger()
     assert (window.project.cabinet.position_x, window.project.cabinet.position_y) == (1350, 2600)
     window.redo_action.trigger()
