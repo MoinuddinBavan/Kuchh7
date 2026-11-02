@@ -1,0 +1,2 @@
+35b96a7649e1705dd8a3241810b79ff6e0fe50b76e47b7a414529985b901ddc8  kuchhe7-client-demo-v1.0.exe
+1a60005d4c95896b3a1c23aecf925a1b88c23745e98351ea5311286112973fd5  kuchhe7-client-demo-v1.0-client-approval-win64.zip

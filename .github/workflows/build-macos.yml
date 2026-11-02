@@ -1,0 +1,91 @@
+name: Build macOS Apple Silicon
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-macos-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-macos:
+    name: Build Kuche7.app and DMG
+    runs-on: macos-15
+    timeout-minutes: 90
+
+    env:
+      PYTHON_BIN: python3
+      PYTHONUTF8: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      QT_QPA_PLATFORM: offscreen
+      PYVISTA_OFF_SCREEN: "true"
+      # GitHub's hosted macOS VM is suitable for compiling and packaging, but
+      # it is not a substitute for interactive VTK/Cocoa/GPU validation.
+      KUCHE7_SKIP_GUI_SMOKE: "1"
+
+    steps:
+      - name: Check out private source
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            release/requirements-build.txt
+            release/requirements-macos.txt
+
+      - name: Verify native Apple Silicon runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = "Darwin"
+          test "$(uname -m)" = "arm64"
+          python3 -c 'import platform, sys; print(platform.platform()); print(platform.machine()); print(sys.version); assert platform.machine() == "arm64"'
+
+      - name: Build application and disk image
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x release/build_macos.sh
+          ./release/build_macos.sh
+
+      - name: Prepare downloadable artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d release/dist-macos/Kuche7.app
+          test -f release/dist-macos/Kuche7-v1.0.1-macOS-arm64.dmg
+          ditto -c -k --sequesterRsrc --keepParent \
+            release/dist-macos/Kuche7.app \
+            release/dist-macos/Kuche7-v1.0.1-macOS-arm64.app.zip
+          shasum -a 256 \
+            release/dist-macos/Kuche7-v1.0.1-macOS-arm64.app.zip \
+            release/dist-macos/Kuche7-v1.0.1-macOS-arm64.dmg \
+            > release/dist-macos/SHA256SUMS.txt
+          cat release/dist-macos/SHA256SUMS.txt
+
+      - name: Upload Kuche7 application bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kuche7-v1.0.1-macOS-arm64-app
+          path: |
+            release/dist-macos/Kuche7-v1.0.1-macOS-arm64.app.zip
+            release/dist-macos/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Kuche7 disk image
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kuche7-v1.0.1-macOS-arm64-dmg
+          path: |
+            release/dist-macos/Kuche7-v1.0.1-macOS-arm64.dmg
+            release/dist-macos/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14

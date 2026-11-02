@@ -1,0 +1,144 @@
+{
+  "schema_version": 6,
+  "name": "AIZ Complete Kitchen Demo",
+  "project_type": "Kitchen",
+  "room": {
+    "width": 3600,
+    "depth": 3200,
+    "height": 2600,
+    "walls": [
+      {
+        "wall_id": "NORTH",
+        "label": "North / front wall"
+      },
+      {
+        "wall_id": "EAST",
+        "label": "East / right wall"
+      },
+      {
+        "wall_id": "SOUTH",
+        "label": "South / cabinet wall"
+      },
+      {
+        "wall_id": "WEST",
+        "label": "West / left wall"
+      }
+    ],
+    "openings": [
+      {
+        "opening_id": "D1",
+        "kind": "door",
+        "wall_id": "WEST",
+        "offset": 500,
+        "width": 900,
+        "height": 2100,
+        "elevation": 0,
+        "swing": "Left In"
+      },
+      {
+        "opening_id": "W1",
+        "kind": "window",
+        "wall_id": "WEST",
+        "offset": 1500,
+        "width": 900,
+        "height": 900,
+        "elevation": 1050,
+        "swing": "Left In"
+      }
+    ]
+  },
+  "cabinets": [
+    {
+      "width": 800,
+      "height": 720,
+      "depth": 600,
+      "board_thickness": 18,
+      "door_count": 2,
+      "drawer_count": 0,
+      "shelf_count": 1,
+      "material": "Cashmere",
+      "cabinet_id": "C1",
+      "position_x": 250,
+      "position_y": 2600,
+      "cabinet_type_id": "base_2_door",
+      "elevation_z": 0
+    },
+    {
+      "width": 600,
+      "height": 720,
+      "depth": 600,
+      "board_thickness": 18,
+      "door_count": 0,
+      "drawer_count": 3,
+      "shelf_count": 0,
+      "material": "Warm White",
+      "cabinet_id": "C2",
+      "position_x": 1050,
+      "position_y": 2600,
+      "cabinet_type_id": "base_3_drawer",
+      "elevation_z": 0
+    },
+    {
+      "width": 800,
+      "height": 720,
+      "depth": 600,
+      "board_thickness": 18,
+      "door_count": 2,
+      "drawer_count": 0,
+      "shelf_count": 0,
+      "material": "Cashmere",
+      "cabinet_id": "C3",
+      "position_x": 1650,
+      "position_y": 2600,
+      "cabinet_type_id": "sink_base",
+      "elevation_z": 0
+    },
+    {
+      "width": 800,
+      "height": 720,
+      "depth": 350,
+      "board_thickness": 18,
+      "door_count": 2,
+      "drawer_count": 0,
+      "shelf_count": 1,
+      "material": "Warm White",
+      "cabinet_id": "C4",
+      "position_x": 250,
+      "position_y": 2850,
+      "cabinet_type_id": "wall_2_door",
+      "elevation_z": 1400
+    },
+    {
+      "width": 600,
+      "height": 720,
+      "depth": 350,
+      "board_thickness": 18,
+      "door_count": 0,
+      "drawer_count": 0,
+      "shelf_count": 2,
+      "material": "Walnut",
+      "cabinet_id": "C5",
+      "position_x": 1050,
+      "position_y": 2850,
+      "cabinet_type_id": "wall_open_shelf",
+      "elevation_z": 1400
+    },
+    {
+      "width": 600,
+      "height": 2100,
+      "depth": 600,
+      "board_thickness": 18,
+      "door_count": 2,
+      "drawer_count": 0,
+      "shelf_count": 4,
+      "material": "Walnut",
+      "cabinet_id": "C6",
+      "position_x": 2750,
+      "position_y": 2600,
+      "cabinet_type_id": "tall_pantry",
+      "elevation_z": 0
+    }
+  ],
+  "selected_cabinet_id": "C1",
+  "selected_opening_id": null
+}

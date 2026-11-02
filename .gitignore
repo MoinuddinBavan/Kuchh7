@@ -1,0 +1,59 @@
+# Python environments and caches
+.venv/
+.venv-*/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.pyd
+.pytest_cache/
+.test-tmp-*/
+.runtime-cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Build and packaging outputs
+build/
+build-*/
+dist/
+dist-*/
+release/build/
+release/build-*/
+release/dist/
+release/dist-*/
+release/*.zip
+release/*.dmg
+release/*.app
+*.egg-info/
+
+# Local validation, backups and generated exports
+backups/
+validation/
+release/validation/
+test_runtime/
+demo_output/*
+!demo_output/complete-kitchen.json
+*.log
+
+# Credentials, signing material and local configuration
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+*.cer
+*.mobileprovision
+AuthKey_*.p8
+
+# Editors and operating systems
+.vscode/
+.idea/
+*.code-workspace
+.DS_Store
+._*
+Thumbs.db
+Desktop.ini
+
