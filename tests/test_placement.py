@@ -4,6 +4,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("PYVISTA_OFF_SCREEN", "true")
 
 from copy import deepcopy
+from math import ceil
 
 import ezdxf
 from openpyxl import load_workbook
@@ -99,13 +100,21 @@ def test_mouse_driven_drag_updates_model_and_undo_redo():
         round(view._oy + (2200 + window.project.cabinet.depth / 2) * view._scale),
     )
     target = view.mapFromScene(target_scene)
+    press_model = view._model_point(start)
+    release_model = view._model_point(target)
+    expected = (
+        round(release_model.x() - (press_model.x() - window.project.cabinet.position_x)),
+        round(release_model.y() - (press_model.y() - window.project.cabinet.position_y)),
+    )
     QTest.mousePress(view.viewport(), Qt.MouseButton.LeftButton, pos=start)
     QTest.mouseMove(view.viewport(), target, delay=10)
     QTest.mouseRelease(view.viewport(), Qt.MouseButton.LeftButton, pos=target)
     application.processEvents()
     moved = (window.project.cabinet.position_x, window.project.cabinet.position_y)
-    assert abs(moved[0] - 1900) <= 10
-    assert abs(moved[1] - 2200) <= 10
+    assert moved == expected
+    pixel_tolerance_mm = max(1, ceil(1 / view._scale))
+    assert abs(moved[0] - 1900) <= pixel_tolerance_mm
+    assert abs(moved[1] - 2200) <= pixel_tolerance_mm
     window.undo_action.trigger()
     assert (window.project.cabinet.position_x, window.project.cabinet.position_y) == (1350, 2600)
     window.redo_action.trigger()
