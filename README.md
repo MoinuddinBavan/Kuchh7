@@ -39,6 +39,11 @@ For the `.app`, `.dmg`, Apple Silicon, signing, and notarization workflow, see
 [`release/MACOS_BUILD.md`](release/MACOS_BUILD.md). macOS binaries must be built
 and validated on macOS; the Windows release is preserved separately.
 
+The separate Intel compatibility candidate for macOS Monterey is documented in
+[`release/MACOS_INTEL_COMPATIBILITY.md`](release/MACOS_INTEL_COMPATIBILITY.md).
+It uses its own manual GitHub Actions workflow and does not replace the Apple
+Silicon build. Monterey support remains subject to testing on the target Mac.
+
 ## Tests
 
 ```powershell

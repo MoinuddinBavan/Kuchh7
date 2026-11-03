@@ -1,0 +1,23 @@
+# Intel/macOS 12 candidate dependency set.
+# Keep this separate from both Windows and Apple Silicon packaging.
+-r ../requirements.txt
+
+# Qt 6.9.3 is the newest prepared line with a macOS 12 universal2 wheel.
+PySide6-Essentials==6.9.3
+shiboken6==6.9.3
+
+# Avoid the newer PyVista validation extension while retaining the APIs used by
+# the demo. PyVista and PyVistaQt themselves are platform-independent wheels.
+pyvista==0.46.4
+pyvistaqt==0.13.1
+
+# Native Intel wheels whose published platform tags predate macOS 12.
+vtk==9.5.2
+numpy==2.2.6
+matplotlib==3.10.7
+
+# Reproducible export, test and packaging toolchain.
+openpyxl==3.1.5
+ezdxf==1.4.5
+pytest==8.4.2
+pyinstaller==6.22.3
