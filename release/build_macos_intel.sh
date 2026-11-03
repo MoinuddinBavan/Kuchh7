@@ -9,6 +9,7 @@ WORK="$ROOT/release/build-macos-intel"
 APP="$DIST/Kuche7.app"
 DMG="$DIST/Kuche7-v1.0.1-macOS-Intel.dmg"
 REPORT="$DIST/Kuche7-v1.0.1-macOS-Intel-compatibility.txt"
+PREFLIGHT_REPORT="$DIST/Kuche7-v1.0.1-macOS-Intel-dependency-preflight.txt"
 export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-12.0}"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
@@ -33,6 +34,24 @@ PY
 "$VENV/bin/python" -m pip check
 mkdir -p "$DIST"
 "$VENV/bin/python" -m pip freeze > "$DIST/Kuche7-v1.0.1-macOS-Intel-dependencies.txt"
+"$VENV/bin/python" - <<'PY'
+from importlib.metadata import version
+
+expected = {
+    "numpy": "1.26.4",
+    "pillow": "10.4.0",
+    "vtk": "9.5.2",
+}
+for package, required in expected.items():
+    installed = version(package)
+    if installed != required:
+        raise SystemExit(f"Expected {package} {required}, found {installed}")
+    print(f"Pinned dependency: {package}=={installed}")
+PY
+"$VENV/bin/python" "$ROOT/release/verify_macos_bundle.py" \
+  --root "$VENV/lib/python3.12/site-packages" \
+  --arch x86_64 --maximum-macos 12.0 --allow-additional-architectures \
+  --report "$PREFLIGHT_REPORT"
 "$VENV/bin/python" -m pytest -q -p no:cacheprovider --basetemp="$ROOT/.test-tmp-macos-intel"
 "$VENV/bin/python" "$ROOT/release/create_macos_icon.py"
 "$VENV/bin/pyinstaller" --noconfirm --clean \
@@ -58,4 +77,5 @@ shasum -a 256 "$DMG"
 
 echo "Application: $APP"
 echo "Disk image:  $DMG"
+echo "Preflight:   $PREFLIGHT_REPORT"
 echo "Audit:       $REPORT"

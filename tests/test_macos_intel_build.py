@@ -46,4 +46,39 @@ def test_intel_build_is_separate_manual_and_fail_closed():
     assert "PySide6-Essentials==6.9.3" in requirements
     assert "pyvista==0.46.4" in requirements
     assert "vtk==9.5.2" in requirements
-    assert "numpy==2.2.6" in requirements
+    assert "numpy==1.26.4" in requirements
+    assert "pillow==10.4.0" in requirements
+    assert "--root \"$VENV/lib/python3.12/site-packages\"" in script
+    assert "--allow-additional-architectures" in script
+    assert '"vtkmodules.gtk"' in spec
+    assert '"vtkmodules.tk"' in spec
+    assert '"vtkmodules.wx"' in spec
+
+
+def test_dependency_preflight_allows_universal_but_final_requires_thin(tmp_path):
+    module = runpy.run_path(str(PROJECT_ROOT / "release" / "verify_macos_bundle.py"))
+    inspect_tree = module["inspect_tree"]
+    native = tmp_path / "library.dylib"
+    native.write_bytes(b"test")
+
+    def compatible_tool(command, *_arguments):
+        if command == "file":
+            return "Mach-O universal binary"
+        if command == "lipo":
+            return "x86_64 arm64"
+        if command == "otool":
+            return "cmd LC_BUILD_VERSION\nminos 12.0"
+        raise AssertionError(command)
+
+    inspect_tree.__globals__["run_tool"] = compatible_tool
+    _, preflight_failures = inspect_tree(
+        tmp_path, "x86_64", "12.0", require_exact_architecture=False
+    )
+    _, final_failures = inspect_tree(
+        tmp_path, "x86_64", "12.0", require_exact_architecture=True
+    )
+
+    assert preflight_failures == []
+    assert final_failures == [
+        "library.dylib: expected only x86_64, found ('x86_64', 'arm64')"
+    ]

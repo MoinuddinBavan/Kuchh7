@@ -75,6 +75,7 @@ jobs:
           path: |
             release/dist-macos-intel/Kuche7-v1.0.1-macOS-Intel.app.zip
             release/dist-macos-intel/Kuche7-v1.0.1-macOS-Intel-compatibility.txt
+            release/dist-macos-intel/Kuche7-v1.0.1-macOS-Intel-dependency-preflight.txt
             release/dist-macos-intel/Kuche7-v1.0.1-macOS-Intel-dependencies.txt
             release/dist-macos-intel/SHA256SUMS-Intel.txt
           if-no-files-found: error
@@ -86,6 +87,7 @@ jobs:
           path: |
             release/dist-macos-intel/Kuche7-v1.0.1-macOS-Intel.dmg
             release/dist-macos-intel/Kuche7-v1.0.1-macOS-Intel-compatibility.txt
+            release/dist-macos-intel/Kuche7-v1.0.1-macOS-Intel-dependency-preflight.txt
             release/dist-macos-intel/Kuche7-v1.0.1-macOS-Intel-dependencies.txt
             release/dist-macos-intel/SHA256SUMS-Intel.txt
           if-no-files-found: error

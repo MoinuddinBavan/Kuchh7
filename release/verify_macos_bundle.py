@@ -40,28 +40,36 @@ def run_tool(*arguments: str) -> str:
     return completed.stdout.strip()
 
 
-def inspect_bundle(app: Path, expected_arch: str, maximum_macos: str) -> tuple[list[str], list[str]]:
+def inspect_tree(
+    root: Path,
+    expected_arch: str,
+    maximum_macos: str,
+    *,
+    require_exact_architecture: bool,
+) -> tuple[list[str], list[str]]:
     records: list[str] = []
     failures: list[str] = []
     maximum = parse_version(maximum_macos)
     macho_count = 0
 
-    for path in sorted(app.rglob("*")):
+    for path in sorted(root.rglob("*")):
         if path.is_symlink() or not path.is_file():
             continue
         description = run_tool("file", "-b", str(path))
         if "Mach-O" not in description:
             continue
         macho_count += 1
-        relative = path.relative_to(app).as_posix()
+        relative = path.relative_to(root).as_posix()
         architectures = parse_architectures(run_tool("lipo", "-archs", str(path)))
         targets = parse_deployment_targets(run_tool("otool", "-l", str(path)))
         records.append(
             f"{relative} | arch={','.join(architectures) or 'UNKNOWN'} "
             f"| min_macos={','.join(targets) or 'UNKNOWN'}"
         )
-        if architectures != (expected_arch,):
+        if require_exact_architecture and architectures != (expected_arch,):
             failures.append(f"{relative}: expected only {expected_arch}, found {architectures or 'none'}")
+        elif not require_exact_architecture and expected_arch not in architectures:
+            failures.append(f"{relative}: required {expected_arch}, found {architectures or 'none'}")
         if not targets:
             failures.append(f"{relative}: no macOS deployment target load command found")
         for target in targets:
@@ -75,42 +83,58 @@ def inspect_bundle(app: Path, expected_arch: str, maximum_macos: str) -> tuple[l
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--app", required=True, type=Path)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--app", type=Path)
+    source.add_argument("--root", type=Path)
     parser.add_argument("--arch", required=True)
     parser.add_argument("--maximum-macos", required=True)
     parser.add_argument("--report", required=True, type=Path)
+    parser.add_argument("--allow-additional-architectures", action="store_true")
     arguments = parser.parse_args()
 
-    if not arguments.app.is_dir():
-        raise SystemExit(f"Application bundle not found: {arguments.app}")
+    root = arguments.app or arguments.root
+    assert root is not None
+    if not root.is_dir():
+        raise SystemExit(f"Audit root not found: {root}")
 
-    plist_target = run_tool(
-        "plutil", "-extract", "LSMinimumSystemVersion", "raw", "-o", "-",
-        str(arguments.app / "Contents" / "Info.plist"),
+    records, failures = inspect_tree(
+        root,
+        arguments.arch,
+        arguments.maximum_macos,
+        require_exact_architecture=not arguments.allow_additional_architectures,
     )
-    records, failures = inspect_bundle(arguments.app, arguments.arch, arguments.maximum_macos)
-    if parse_version(plist_target) > parse_version(arguments.maximum_macos):
-        failures.append(
-            f"Info.plist requires macOS {plist_target}, exceeding {arguments.maximum_macos}"
+    plist_target: str | None = None
+    if arguments.app is not None:
+        plist_target = run_tool(
+            "plutil", "-extract", "LSMinimumSystemVersion", "raw", "-o", "-",
+            str(arguments.app / "Contents" / "Info.plist"),
         )
+        if parse_version(plist_target) > parse_version(arguments.maximum_macos):
+            failures.append(
+                f"Info.plist requires macOS {plist_target}, exceeding {arguments.maximum_macos}"
+            )
 
     lines = [
-        "Kuche7 macOS bundle compatibility audit",
-        f"Bundle: {arguments.app}",
+        "Kuche7 macOS native compatibility audit",
+        f"Audit root: {root}",
         f"Required architecture: {arguments.arch}",
+        "Architecture policy: "
+        + (
+            "required architecture may be part of a universal binary"
+            if arguments.allow_additional_architectures
+            else "thin binary required"
+        ),
         f"Maximum deployment target: macOS {arguments.maximum_macos}",
-        f"Info.plist minimum: macOS {plist_target}",
         f"Mach-O files inspected: {len(records)}",
-        "",
-        *records,
-        "",
-        "RESULT: " + ("FAIL" if failures else "PASS"),
     ]
+    if plist_target is not None:
+        lines.append(f"Info.plist minimum: macOS {plist_target}")
+    lines.extend(["", *records, "", "RESULT: " + ("FAIL" if failures else "PASS")])
     if failures:
         lines.extend(["", "Failures:", *(f"- {failure}" for failure in failures)])
     arguments.report.parent.mkdir(parents=True, exist_ok=True)
     arguments.report.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print("\n".join(lines[-(len(failures) + 3) :] if failures else lines[:7] + ["RESULT: PASS"]))
+    print("\n".join(lines[-(len(failures) + 3) :] if failures else lines[:8] + ["RESULT: PASS"]))
     return 1 if failures else 0
 
 

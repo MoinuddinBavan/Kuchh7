@@ -40,7 +40,16 @@ a = Analysis(
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
-    excludes=["PyQt5", "PyQt6", "tkinter", "pytest"],
+    excludes=[
+        "PyQt5",
+        "PyQt6",
+        "tkinter",
+        "_tkinter",
+        "pytest",
+        "vtkmodules.gtk",
+        "vtkmodules.tk",
+        "vtkmodules.wx",
+    ],
     noarchive=False,
 )
 pyz = PYZ(a.pure)

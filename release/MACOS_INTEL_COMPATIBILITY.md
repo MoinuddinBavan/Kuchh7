@@ -24,17 +24,26 @@ both mandatory even when dependency wheels advertise older deployment tags.
 | PySide6-Essentials / Shiboken6 | 6.9.3 | universal2, macOS 12+ |
 | PyVista | 0.46.4 | platform-independent wheel |
 | PyVistaQt | 0.13.1 | platform-independent wheel |
-| VTK | 9.5.2 | x86_64 wheel, macOS 10.10+ tag; compatible with PyVista 0.46.4 |
-| NumPy | 2.2.6 | x86_64 wheel, macOS 10.13+ tag |
+| VTK | 9.5.2 | x86_64 wheel; every inspected native binary targets macOS 10.10 |
+| NumPy | 1.26.4 | CPython 3.12 x86_64 wheel; every inspected native binary targets macOS 10.9 |
+| Pillow | 10.4.0 | CPython 3.12 x86_64 wheel; every inspected native binary targets macOS 10.10 |
 | Matplotlib | 3.10.7 | x86_64 wheel, macOS 10.13+ tag |
 | PyInstaller | 6.22.3 | x86_64/universal2 packaging support |
 
 Wheel filenames are only resolver filters, not final runtime proof. The build
-runs `verify_macos_bundle.py`, which enumerates every Mach-O file in the frozen
-application, requires a thin `x86_64` architecture, reads the real
+runs `verify_macos_bundle.py` immediately after dependency installation and
+again on the frozen application. The preflight allows universal binaries but
+requires an x86_64 slice; the final audit requires thin x86_64. Both read the real
 `LC_BUILD_VERSION` or `LC_VERSION_MIN_MACOSX` load command, and fails if any
 deployment target exceeds macOS 12.0. The generated audit and exact dependency
 list are uploaded beside the DMG.
+
+Intel Build #1 failed correctly because pip selected NumPy's macOS 14 optimized
+wheel on the macOS 15 host. It also exposed runner-provided X11 libraries after
+PyInstaller analyzed unused VTK Tk, GTK and wx integrations. The Intel build now
+uses NumPy 1.26.4 and Pillow 10.4.0, whose inspected CPython 3.12 Intel binaries
+target older macOS releases, and excludes those non-Qt VTK UI bridges. The
+PySide6/PyVistaQt Qt rendering path remains included.
 
 ## Manual workflow
 

@@ -13,8 +13,9 @@ pyvistaqt==0.13.1
 
 # Native Intel wheels whose published platform tags predate macOS 12.
 vtk==9.5.2
-numpy==2.2.6
+numpy==1.26.4
 matplotlib==3.10.7
+pillow==10.4.0
 
 # Reproducible export, test and packaging toolchain.
 openpyxl==3.1.5
