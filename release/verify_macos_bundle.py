@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 from pathlib import Path
 
@@ -38,6 +39,55 @@ def parse_deployment_targets(output: str) -> tuple[str, ...]:
 def run_tool(*arguments: str) -> str:
     completed = subprocess.run(arguments, check=True, capture_output=True, text=True)
     return completed.stdout.strip()
+
+
+def read_provenance(path: Path | None) -> dict[str, dict[str, str]]:
+    provenance: dict[str, dict[str, str]] = {}
+    if path is None or not path.is_file():
+        return provenance
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.startswith("library="):
+            continue
+        fields = {}
+        for field in line.split(" | "):
+            key, separator, value = field.partition("=")
+            if separator:
+                fields[key] = value
+        if "library" in fields:
+            provenance[fields["library"]] = fields
+    return provenance
+
+
+def write_summary(
+    path: Path,
+    failures: list[str],
+    provenance: dict[str, dict[str, str]],
+) -> None:
+    lines = ["Kuche7 Intel macOS compatibility summary"]
+    incompatible_pattern = re.compile(
+        r"^(?P<path>.+): deployment target (?P<minimum>[^ ]+) exceeds macOS (?P<maximum>.+)$"
+    )
+    incompatible_count = 0
+    for failure in failures:
+        match = incompatible_pattern.match(failure)
+        if not match:
+            continue
+        incompatible_count += 1
+        relative = match.group("path")
+        name = Path(relative).name
+        details = provenance.get(name, {})
+        lines.append(
+            f"incompatible={name} | bundle_path={relative} | "
+            f"source={details.get('source', 'UNKNOWN')} | "
+            f"introduced_by={details.get('introduced_by', 'UNKNOWN; inspect Analysis-00.toc')} | "
+            f"min_macos={match.group('minimum')} | allowed_macos={match.group('maximum')}"
+        )
+    lines.append(f"incompatible_count={incompatible_count}")
+    lines.append("RESULT: " + ("FAIL" if failures else "PASS"))
+    if failures and incompatible_count == 0:
+        lines.extend(f"failure={failure}" for failure in failures)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def inspect_tree(
@@ -89,6 +139,8 @@ def main() -> int:
     parser.add_argument("--arch", required=True)
     parser.add_argument("--maximum-macos", required=True)
     parser.add_argument("--report", required=True, type=Path)
+    parser.add_argument("--provenance", type=Path)
+    parser.add_argument("--summary-report", type=Path)
     parser.add_argument("--allow-additional-architectures", action="store_true")
     arguments = parser.parse_args()
 
@@ -134,6 +186,12 @@ def main() -> int:
         lines.extend(["", "Failures:", *(f"- {failure}" for failure in failures)])
     arguments.report.parent.mkdir(parents=True, exist_ok=True)
     arguments.report.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    if arguments.summary_report is not None:
+        write_summary(
+            arguments.summary_report,
+            failures,
+            read_provenance(arguments.provenance),
+        )
     print("\n".join(lines[-(len(failures) + 3) :] if failures else lines[:8] + ["RESULT: PASS"]))
     return 1 if failures else 0
 

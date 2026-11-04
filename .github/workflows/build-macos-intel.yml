@@ -53,6 +53,22 @@ jobs:
           chmod +x release/build_macos_intel.sh
           ./release/build_macos_intel.sh
 
+      - name: Upload Intel build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kuche7-v1.0.1-macOS-Intel-diagnostics
+          path: |
+            release/dist-macos-intel/Kuche7-v1.0.1-macOS-Intel-binary-provenance.txt
+            release/dist-macos-intel/Kuche7-v1.0.1-macOS-Intel-dependency-preflight.txt
+            release/dist-macos-intel/Kuche7-v1.0.1-macOS-Intel-compatibility-summary.txt
+            release/dist-macos-intel/Kuche7-v1.0.1-macOS-Intel-compatibility.txt
+            release/build-macos-intel/kuchhe7-macos-intel/warn-kuchhe7-macos-intel.txt
+            release/build-macos-intel/kuchhe7-macos-intel/Analysis-00.toc
+            release/build-macos-intel/kuchhe7-macos-intel/COLLECT-00.toc
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Prepare downloadable Intel artifacts
         shell: bash
         run: |
@@ -75,6 +91,8 @@ jobs:
           path: |
             release/dist-macos-intel/Kuche7-v1.0.1-macOS-Intel.app.zip
             release/dist-macos-intel/Kuche7-v1.0.1-macOS-Intel-compatibility.txt
+            release/dist-macos-intel/Kuche7-v1.0.1-macOS-Intel-binary-provenance.txt
+            release/dist-macos-intel/Kuche7-v1.0.1-macOS-Intel-compatibility-summary.txt
             release/dist-macos-intel/Kuche7-v1.0.1-macOS-Intel-dependency-preflight.txt
             release/dist-macos-intel/Kuche7-v1.0.1-macOS-Intel-dependencies.txt
             release/dist-macos-intel/SHA256SUMS-Intel.txt
@@ -87,6 +105,8 @@ jobs:
           path: |
             release/dist-macos-intel/Kuche7-v1.0.1-macOS-Intel.dmg
             release/dist-macos-intel/Kuche7-v1.0.1-macOS-Intel-compatibility.txt
+            release/dist-macos-intel/Kuche7-v1.0.1-macOS-Intel-binary-provenance.txt
+            release/dist-macos-intel/Kuche7-v1.0.1-macOS-Intel-compatibility-summary.txt
             release/dist-macos-intel/Kuche7-v1.0.1-macOS-Intel-dependency-preflight.txt
             release/dist-macos-intel/Kuche7-v1.0.1-macOS-Intel-dependencies.txt
             release/dist-macos-intel/SHA256SUMS-Intel.txt

@@ -10,7 +10,25 @@ APP="$DIST/Kuche7.app"
 DMG="$DIST/Kuche7-v1.0.1-macOS-Intel.dmg"
 REPORT="$DIST/Kuche7-v1.0.1-macOS-Intel-compatibility.txt"
 PREFLIGHT_REPORT="$DIST/Kuche7-v1.0.1-macOS-Intel-dependency-preflight.txt"
+PROVENANCE_REPORT="$DIST/Kuche7-v1.0.1-macOS-Intel-binary-provenance.txt"
+SUMMARY_REPORT="$DIST/Kuche7-v1.0.1-macOS-Intel-compatibility-summary.txt"
 export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-12.0}"
+export KUCHE7_BINARY_PROVENANCE_REPORT="$PROVENANCE_REPORT"
+
+show_failure_diagnostics() {
+  status=$?
+  trap - EXIT
+  if [[ $status -ne 0 ]]; then
+    for diagnostic in "$PROVENANCE_REPORT" "$PREFLIGHT_REPORT" "$SUMMARY_REPORT" "$REPORT"; do
+      if [[ -f "$diagnostic" ]]; then
+        echo "===== $(basename "$diagnostic") ====="
+        tail -n 80 "$diagnostic"
+      fi
+    done
+  fi
+  exit "$status"
+}
+trap show_failure_diagnostics EXIT
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "This script must run on macOS." >&2
@@ -65,7 +83,8 @@ else
 fi
 codesign --verify --deep --strict --verbose=2 "$APP"
 "$VENV/bin/python" "$ROOT/release/verify_macos_bundle.py" \
-  --app "$APP" --arch x86_64 --maximum-macos 12.0 --report "$REPORT"
+  --app "$APP" --arch x86_64 --maximum-macos 12.0 --report "$REPORT" \
+  --provenance "$PROVENANCE_REPORT" --summary-report "$SUMMARY_REPORT"
 
 if [[ "${KUCHE7_SKIP_GUI_SMOKE:-0}" == "1" ]]; then
   echo "Skipping hosted-runner GUI smoke test; physical Intel Mac validation remains required."
@@ -78,4 +97,6 @@ shasum -a 256 "$DMG"
 echo "Application: $APP"
 echo "Disk image:  $DMG"
 echo "Preflight:   $PREFLIGHT_REPORT"
+echo "Provenance:  $PROVENANCE_REPORT"
+echo "Summary:     $SUMMARY_REPORT"
 echo "Audit:       $REPORT"

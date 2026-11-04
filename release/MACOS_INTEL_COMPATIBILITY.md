@@ -39,11 +39,26 @@ deployment target exceeds macOS 12.0. The generated audit and exact dependency
 list are uploaded beside the DMG.
 
 Intel Build #1 failed correctly because pip selected NumPy's macOS 14 optimized
-wheel on the macOS 15 host. It also exposed runner-provided X11 libraries after
-PyInstaller analyzed unused VTK Tk, GTK and wx integrations. The Intel build now
-uses NumPy 1.26.4 and Pillow 10.4.0, whose inspected CPython 3.12 Intel binaries
-target older macOS releases, and excludes those non-Qt VTK UI bridges. The
-PySide6/PyVistaQt Qt rendering path remains included.
+wheel on the macOS 15 host. It also exposed runner-provided X11 libraries, but
+that first log did not establish their exact importer. The Intel build now uses
+NumPy 1.26.4 and Pillow 10.4.0, whose inspected CPython 3.12 Intel binaries
+target older macOS releases. The PySide6/PyVistaQt Qt rendering path remains
+included.
+
+Intel Build #2 proved the remaining X11 origin. PyVista 0.46.4's required
+`pyvista.plotting.plotter` module contains a Linux-only
+`ctypes.CDLL('libX11.so')` call. PyInstaller's static ctypes scan cannot apply
+that runtime platform guard, so it copied the macOS 15 Intel runner's Homebrew
+`libX11.so`, followed by that library's `libXau.6.dylib` and
+`libXdmcp.6.dylib` dependencies. These are separate from Pillow's retained,
+macOS-10.10-compatible `PIL/.dylibs/libXau.6.0.0.dylib`.
+
+The Intel spec now removes only the external runner X11 chain after Analysis.
+It first verifies the exact three-library set, confirms the PyVista call remains
+Linux-only, records every original source path and deployment target, and uses
+`otool -L` to prove no retained binary links any candidate. Any changed origin,
+partial set or retained dependent fails the build instead of removing a file.
+The final complete-bundle audit and code-signing verification remain mandatory.
 
 ## Manual workflow
 

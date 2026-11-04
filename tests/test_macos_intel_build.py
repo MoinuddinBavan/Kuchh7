@@ -53,6 +53,11 @@ def test_intel_build_is_separate_manual_and_fail_closed():
     assert '"vtkmodules.gtk"' in spec
     assert '"vtkmodules.tk"' in spec
     assert '"vtkmodules.wx"' in spec
+    assert "ctypes.CDLL('libX11.so')" in spec
+    assert "retained_dependents" in spec
+    assert "SAFE_TO_EXCLUDE_RUNNER_X11_CHAIN" in spec
+    assert "--provenance" in script
+    assert "--summary-report" in script
 
 
 def test_dependency_preflight_allows_universal_but_final_requires_thin(tmp_path):
@@ -82,3 +87,29 @@ def test_dependency_preflight_allows_universal_but_final_requires_thin(tmp_path)
     assert final_failures == [
         "library.dylib: expected only x86_64, found ('x86_64', 'arm64')"
     ]
+
+
+def test_failure_summary_includes_binary_provenance(tmp_path):
+    module = runpy.run_path(str(PROJECT_ROOT / "release" / "verify_macos_bundle.py"))
+    provenance_path = tmp_path / "provenance.txt"
+    summary_path = tmp_path / "summary.txt"
+    provenance_path.write_text(
+        "library=libX11.so | source=/usr/local/lib/libX11.so | "
+        "introduced_by=pyvista.plotting.plotter Linux-only ctypes.CDLL | "
+        "min_macos=14.0 | decision=excluded\n",
+        encoding="utf-8",
+    )
+
+    provenance = module["read_provenance"](provenance_path)
+    module["write_summary"](
+        summary_path,
+        ["Contents/Frameworks/libX11.so: deployment target 14.0 exceeds macOS 12.0"],
+        provenance,
+    )
+
+    summary = summary_path.read_text(encoding="utf-8")
+    assert "incompatible=libX11.so" in summary
+    assert "source=/usr/local/lib/libX11.so" in summary
+    assert "introduced_by=pyvista.plotting.plotter Linux-only ctypes.CDLL" in summary
+    assert "min_macos=14.0" in summary
+    assert "RESULT: FAIL" in summary
