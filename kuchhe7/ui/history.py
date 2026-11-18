@@ -5,7 +5,7 @@ from typing import Callable
 
 from PySide6.QtGui import QUndoCommand
 
-from ..models import Cabinet, HardwareAssignment, Opening, PlacedProduct
+from ..models import Cabinet, HardwareAssignment, Opening, PlacedProduct, Project
 
 
 class MoveCabinetCommand(QUndoCommand):
@@ -107,6 +107,22 @@ class ProductChangeCommand(QUndoCommand):
 
     def redo(self) -> None:
         self._apply_state(self.item_id, deepcopy(self.after))
+
+
+class ApplyDesignProposalCommand(QUndoCommand):
+    """Apply one locally validated proposal as a single undoable project change."""
+
+    def __init__(self, before: Project, after: Project, apply_snapshot) -> None:
+        super().__init__("Apply design proposal")
+        self.before = deepcopy(before)
+        self.after = deepcopy(after)
+        self._apply_snapshot = apply_snapshot
+
+    def undo(self) -> None:
+        self._apply_snapshot(deepcopy(self.before))
+
+    def redo(self) -> None:
+        self._apply_snapshot(deepcopy(self.after))
 
 
 class OpeningChangeCommand(QUndoCommand):

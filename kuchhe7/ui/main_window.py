@@ -41,6 +41,8 @@ from PySide6.QtWidgets import (
 )
 
 from ..bom import generate_project_bom
+from ..ai_design import (DesignProposal, LocalRuleBasedProvider, build_proposal,
+                         configured_provider, project_fingerprint)
 from ..catalogue import CATEGORIES, FURNITURE_FAMILIES, catalogue_items, create_catalogue_cabinet, furniture_items, get_catalogue_item
 from ..exports import export_bom_xlsx, export_front_elevation_dxf
 from ..engineering_dxf import CNC_PROTOTYPE, DRAWING_LABELS, export_engineering_dxf
@@ -50,10 +52,11 @@ from ..openings import DOOR_SWINGS, WALL_IDS, WALL_LABELS, wall_length
 from ..persistence import load_project, save_project
 from ..platform_support import is_macos, platform_shortcut
 from .cad_views import Cabinet3DView, RoomPlanView
+from .ai_design_workspace import AIDesignWorkspace
 from .catalogue_preview import catalogue_thumbnail, product_thumbnail
 from .documents_workspace import DocumentsWorkspace
 from .engineering_export_dialog import EngineeringExportDialog
-from .history import AddCabinetCommand, HardwareAssignmentCommand, MoveCabinetCommand, OpeningChangeCommand, ProductChangeCommand, RemoveCabinetCommand
+from .history import AddCabinetCommand, ApplyDesignProposalCommand, HardwareAssignmentCommand, MoveCabinetCommand, OpeningChangeCommand, ProductChangeCommand, RemoveCabinetCommand
 from .manufacturing_preview import ManufacturingPreviewWidget
 from .sheet_nesting import SheetNestingWidget
 
@@ -81,6 +84,7 @@ class MainWindow(QMainWindow):
         self.project_path: Path | None = None
         self.selected_product_id: str | None = None
         self.selected_hardware_assignment_id: str | None = None
+        self.pending_design_proposal: DesignProposal | None = None
         self._dirty = False
         self._updating_controls = False
         self._updating_opening_controls = False
@@ -120,6 +124,7 @@ class MainWindow(QMainWindow):
         self.load_complete_action = QAction(
             "Load Complete Kitchen Demo", self, triggered=self.load_complete_kitchen_demo
         )
+        self.ai_design_action = QAction("Design Assistant…", self, triggered=self.show_ai_design)
         self.add_cabinet_action = QAction("Place Selected", self, triggered=self.begin_catalogue_placement)
         self.remove_cabinet_action = QAction("Remove Selected", self, triggered=self.remove_selected_object)
         self.delete_cabinet_action = QAction("Delete selected object", self, triggered=self.remove_selected_object)
@@ -259,6 +264,7 @@ class MainWindow(QMainWindow):
         design_menu = self.menuBar().addMenu("&Design")
         design_menu.addActions([self.load_complete_action, self.add_cabinet_action,
                                 self.duplicate_action, self.remove_cabinet_action])
+        design_menu.addAction(self.ai_design_action)
         design_menu.addSeparator()
         opening_menu = design_menu.addMenu("Room Openings")
         opening_menu.addActions([
@@ -398,6 +404,9 @@ class MainWindow(QMainWindow):
         self.sheet_nesting.set_project(self.project)
         self.documents_workspace = DocumentsWorkspace(lambda: self._set_dirty(True))
         self.documents_workspace.set_project(self.project)
+        self.ai_design_workspace = AIDesignWorkspace(
+            self.generate_design_proposal, self.apply_design_proposal, self.reject_design_proposal
+        )
         self.workspace_tabs = QTabWidget()
         self.workspace_tabs.setObjectName("workspaceTabs")
         self.workspace_tabs.setDocumentMode(True)
@@ -405,6 +414,7 @@ class MainWindow(QMainWindow):
         self.workspace_tabs.addTab(self.manufacturing_preview, "Manufacturing Preview")
         self.workspace_tabs.addTab(self.sheet_nesting, "Sheet Nesting")
         self.workspace_tabs.addTab(self.documents_workspace, "BOM & Quotation")
+        self.workspace_tabs.addTab(self.ai_design_workspace, "Design Assistant")
         self.workspace_tabs.currentChanged.connect(self._workspace_changed)
         self.setCentralWidget(self.workspace_tabs)
 
@@ -865,11 +875,88 @@ class MainWindow(QMainWindow):
         self.workspace_tabs.setCurrentWidget(self.documents_workspace)
         self.statusBar().showMessage("Review illustrative BOM, then prepare a quotation with manually entered prices")
 
+    def show_ai_design(self) -> None:
+        self.workspace_tabs.setCurrentWidget(self.ai_design_workspace)
+        self.statusBar().showMessage("Design Assistant — proposals are previews until explicitly applied")
+
+    def generate_design_proposal(self, prompt: str, mode: str = "replace") -> DesignProposal | None:
+        fallback_warning = None
+        try:
+            provider = configured_provider()
+            intent = provider.interpret(prompt, self.project)
+        except (RuntimeError, ValueError) as error:
+            provider = LocalRuleBasedProvider()
+            intent = provider.interpret(prompt, self.project)
+            fallback_warning = f"Configured service unavailable or invalid; using local rule-based demo. {error}"
+        try:
+            proposal = build_proposal(
+                self.project, intent, source=provider.name, mode=mode,
+                allow_reposition=isinstance(provider, LocalRuleBasedProvider),
+            )
+        except ValueError as error:
+            self.pending_design_proposal = None
+            self.ai_design_workspace.clear_proposal(f"Could not build proposal: {error}")
+            self.statusBar().showMessage(str(error))
+            return None
+        if fallback_warning:
+            proposal.warnings = (fallback_warning, *proposal.warnings)
+        self.pending_design_proposal = proposal
+        self.ai_design_workspace.show_proposal(proposal)
+        self.statusBar().showMessage(
+            f"{provider.name}: {len(proposal.items)} validated item(s); project unchanged"
+        )
+        return proposal
+
+    def reject_design_proposal(self) -> None:
+        self.pending_design_proposal = None
+        self.ai_design_workspace.clear_proposal()
+        self.statusBar().showMessage("Design proposal rejected; project unchanged")
+
+    def _apply_design_snapshot(self, snapshot: Project) -> None:
+        snapshot.validate()
+        self.project = deepcopy(snapshot)
+        self.selected_product_id = None
+        self.selected_hardware_assignment_id = None
+        self._set_dirty(True)
+        self.refresh_all(reset_camera=True)
+        self.view3d.fit_all_cabinets()
+
+    def apply_design_proposal(self) -> bool:
+        proposal = self.pending_design_proposal
+        if proposal is None or not proposal.can_apply:
+            self.statusBar().showMessage("Generate a valid design proposal first")
+            return False
+        if project_fingerprint(self.project) != proposal.base_fingerprint:
+            self.reject_design_proposal()
+            self.statusBar().showMessage("Project changed after generation; regenerate the proposal")
+            return False
+        if proposal.mode == "replace" and (self.project.cabinets or self.project.placed_products):
+            answer = QMessageBox.question(
+                self, "Replace current layout?",
+                "Applying this proposal will replace the current furniture and placed products. "
+                "The room and openings remain. You can Undo this change.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                self.statusBar().showMessage("Proposal not applied; existing layout preserved")
+                return False
+        proposal.after_project.validate()
+        self.pending_design_proposal = None
+        self.undo_stack.push(ApplyDesignProposalCommand(
+            self.project, proposal.after_project, self._apply_design_snapshot
+        ))
+        self.ai_design_workspace.clear_proposal("Proposal applied. Edit furniture in the 2D Design Studio.")
+        self.workspace_tabs.setCurrentIndex(0)
+        self.statusBar().showMessage("Validated design applied; edit in 2D or use Undo")
+        return True
+
     def _workspace_changed(self, index: int) -> None:
         engineering_active = index == self.workspace_tabs.indexOf(self.manufacturing_preview)
         nesting_active = index == self.workspace_tabs.indexOf(self.sheet_nesting)
         documents_active = index == self.workspace_tabs.indexOf(self.documents_workspace)
-        auxiliary_active = engineering_active or nesting_active or documents_active
+        design_assistant_active = index == self.workspace_tabs.indexOf(self.ai_design_workspace)
+        auxiliary_active = engineering_active or nesting_active or documents_active or design_assistant_active
         if auxiliary_active and self.maximize_3d_action.isChecked():
             self.maximize_3d_action.setChecked(False)
         self.maximize_3d_action.setEnabled(not auxiliary_active)
@@ -893,9 +980,11 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(
                     "Demonstration sheet nesting — click Recalculate after project changes"
                 )
-            else:
+            elif documents_active:
                 self.documents_workspace.set_project(self.project)
                 self.statusBar().showMessage("BOM and quotation review — illustrative quantities and manual prices")
+            else:
+                self.statusBar().showMessage("Design Assistant — local proposal preview; project unchanged")
         else:
             for dock, was_visible in self._engineering_restore_docks.items():
                 dock.setVisible(was_visible)
@@ -1242,6 +1331,10 @@ class MainWindow(QMainWindow):
         self._updating_opening_controls = False
 
     def refresh_all(self, reset_camera: bool = False) -> None:
+        if (self.pending_design_proposal is not None
+                and project_fingerprint(self.project) != self.pending_design_proposal.base_fingerprint):
+            self.pending_design_proposal = None
+            self.ai_design_workspace.clear_proposal("Project changed; regenerate the design proposal.")
         if not any(item.item_id == self.selected_product_id for item in self.project.placed_products):
             self.selected_product_id = None
         if not any(item.assignment_id == self.selected_hardware_assignment_id for item in self.project.hardware_assignments):

@@ -1,5 +1,27 @@
 # kuchhe7 Client Approval Demo v1.0.1
 
+## Stage 5A design assistant
+
+Open **Design > Design Assistant…** to type a request, choose **Replace** or
+**Add**, and generate a reviewable proposal. The built-in mode is explicitly
+**local rule-based demonstration (not AI)**. It uses existing catalogue IDs,
+default dimensions, supported finishes and the current room/opening validation.
+The proposal table and 2D preview do not change the active project. **Apply**
+commits the validated proposal as one Undo/Redo step and opens Design Studio for
+normal 2D editing and 3D inspection. Replacing existing furniture asks for
+confirmation; rejecting the proposal leaves the project unchanged.
+
+The model has no cabinet rotation property. L-footprint proposals use fixed
+front orientation and display this limit. Props remain visual-only and excluded
+from BOM, quotation, nesting and engineering exports. A separately configured
+prompt-to-JSON service can be used through environment variables; see the
+[provider contract](docs/STAGE5A_PROVIDER.md). No live AI service or credentials
+are included. Capture the local prompt, proposal and editable result on Windows:
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.capture_stage5a_design
+```
+
 ## Stage 4 engineering drawing DXF exports
 
 Choose **Manufacturing > Engineering Drawing Export…** (also in File) to export
