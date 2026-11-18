@@ -1,5 +1,33 @@
 # kuchhe7 Client Approval Demo v1.0.1
 
+## Stage 4 engineering drawing DXF exports
+
+Choose **Manufacturing > Engineering Drawing Export…** (also in File) to export
+one of five drawings: Room Plan, Kitchen Layout, Cabinet Front Elevations,
+Cabinet Panel Outlines or a **CNC-Targeted Generic Prototype**. The original
+front-elevation DXF menu action remains unchanged. All new files use R2010 DXF
+and millimetres. Plan coordinates use the south-west corner as DXF (0, 0):
+`DXF X = model X`, `DXF Y = room depth - model Y`. Footprints, openings and
+labels derive from the active project. Panel outlines expand only positive
+length/width/thickness components from the existing illustrative cabinet BOM.
+No props, appliances, hardware assignments or drilling enter panel outputs.
+
+The generic CNC prototype supports configurable outline/annotation layers,
+LWPOLYLINE or POLYLINE outlines, an origin offset and optional labels. It has
+**no verified machine compatibility**, toolpaths, drilling or production
+instructions. See the [CNC/CAM compatibility checklist](docs/STAGE4_CNC_COMPATIBILITY.md)
+for the client information and import acceptance still required. Generate the
+five sample DXFs, rendered previews and native export-dialog screenshot with:
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.capture_stage4_engineering
+```
+
+The DXF preview capture script uses optional `matplotlib` for rendered images;
+the desktop export itself needs only the existing `ezdxf` dependency. Install
+`matplotlib` in the development virtual environment if preview capture reports
+that it is missing. An external CAD/CAM import test remains required.
+
 ## Stage 3 BOM and customer quotation
 
 Open a project and choose **Manufacturing > BOM & Quotation**. The **BOM Review**

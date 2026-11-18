@@ -43,6 +43,7 @@ from PySide6.QtWidgets import (
 from ..bom import generate_project_bom
 from ..catalogue import CATEGORIES, FURNITURE_FAMILIES, catalogue_items, create_catalogue_cabinet, furniture_items, get_catalogue_item
 from ..exports import export_bom_xlsx, export_front_elevation_dxf
+from ..engineering_dxf import CNC_PROTOTYPE, DRAWING_LABELS, export_engineering_dxf
 from ..models import MATERIALS, MAX_CABINETS, PROJECT_TYPES, HardwareAssignment, Opening, PlacedProduct, Project
 from ..product_libraries import APPEARANCE_COLOURS, APPLIANCES, FURNITURE, HARDWARE, LIBRARIES, PROPS, get_product, products_for
 from ..openings import DOOR_SWINGS, WALL_IDS, WALL_LABELS, wall_length
@@ -51,6 +52,7 @@ from ..platform_support import is_macos, platform_shortcut
 from .cad_views import Cabinet3DView, RoomPlanView
 from .catalogue_preview import catalogue_thumbnail, product_thumbnail
 from .documents_workspace import DocumentsWorkspace
+from .engineering_export_dialog import EngineeringExportDialog
 from .history import AddCabinetCommand, HardwareAssignmentCommand, MoveCabinetCommand, OpeningChangeCommand, ProductChangeCommand, RemoveCabinetCommand
 from .manufacturing_preview import ManufacturingPreviewWidget
 from .sheet_nesting import SheetNestingWidget
@@ -148,6 +150,12 @@ class MainWindow(QMainWindow):
         self.export_dxf_action.setToolTip(
             "Export demonstration cabinet front elevations — not nesting or machine cutting instructions"
         )
+        self.engineering_export_action = QAction(
+            "Engineering Drawing Export…", self, triggered=self.export_engineering_drawing
+        )
+        self.engineering_export_action.setToolTip(
+            "Choose room plan, kitchen layout, elevations, panel outlines or generic CNC-targeted DXF prototype"
+        )
         self.manufacturing_preview_action = QAction(
             "Manufacturing Preview", self, shortcut=platform_shortcut("Ctrl+Shift+M"),
             triggered=self.show_manufacturing_preview,
@@ -231,6 +239,7 @@ class MainWindow(QMainWindow):
         file_menu.addActions([self.load_sample_action, self.load_complete_action])
         file_menu.addSeparator()
         file_menu.addActions([self.export_xlsx_action, self.export_dxf_action])
+        file_menu.addAction(self.engineering_export_action)
         file_menu.addSeparator()
         file_menu.addAction(self.exit_action)
         edit_menu = self.menuBar().addMenu("&Edit")
@@ -266,6 +275,7 @@ class MainWindow(QMainWindow):
         manufacturing_menu.addAction(self.documents_action)
         manufacturing_menu.addSeparator()
         manufacturing_menu.addActions([self.export_xlsx_action, self.export_dxf_action])
+        manufacturing_menu.addAction(self.engineering_export_action)
         help_menu = self.menuBar().addMenu("&Help")
         help_menu.addAction(self.about_action)
 
@@ -1828,6 +1838,28 @@ class MainWindow(QMainWindow):
                 )
             except (OSError, ValueError) as error:
                 QMessageBox.critical(self, "Export failed", str(error))
+
+    def export_engineering_drawing(self) -> None:
+        dialog = EngineeringExportDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        drawing_type = dialog.drawing_type
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            f"Export {DRAWING_LABELS[drawing_type]} — demonstration DXF",
+            f"{self.project.name}-{drawing_type}.dxf",
+            "AutoCAD DXF (*.dxf)",
+        )
+        if not filename:
+            return
+        try:
+            path = export_engineering_dxf(
+                self.project, filename, drawing_type, cnc_profile=dialog.cnc_profile()
+            )
+            suffix = "generic CNC prototype; client CAM import not verified" if drawing_type == CNC_PROTOTYPE else "demonstration drawing"
+            self.statusBar().showMessage(f"Exported {suffix}: {path}")
+        except (OSError, ValueError) as error:
+            QMessageBox.critical(self, "Engineering export failed", str(error))
 
     def show_about(self) -> None:
         QMessageBox.about(self, "About kuchhe7", "<b>kuchhe7 Client Approval Demo v1.0.1</b><br>Kitchen Design & Manufacturing Platform<br><br>Interactive design, cabinet engineering and sheet nesting feasibility previews by AIZ INFOTECHS.<br>Nesting, drilling, clearances, DXF exports and construction rules are demonstration-only and not approved for production.")
