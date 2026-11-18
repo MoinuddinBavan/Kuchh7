@@ -4,8 +4,9 @@ from copy import deepcopy
 from math import cos, pi, sin
 
 import pyvista as pv
+from vtkmodules.vtkCommonMath import vtkMatrix4x4
 from pyvistaqt import QtInteractor
-from PySide6.QtCore import QPointF, Qt, Signal
+from PySide6.QtCore import QLineF, QPointF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPolygonF
 from PySide6.QtWidgets import QGraphicsItem, QGraphicsScene, QGraphicsView, QVBoxLayout, QWidget
 
@@ -213,20 +214,29 @@ class RoomPlanView(QGraphicsView):
         for cabinet in cabinets:
             catalogue_item = get_catalogue_item(cabinet.cabinet_type_id)
             selected = cabinet.cabinet_id == selected_cabinet_id
-            cw, cd = cabinet.width * scale, cabinet.depth * scale
+            cw, cd = cabinet.footprint_width * scale, cabinet.footprint_depth * scale
             cabinet_x = ox + cabinet.position_x * scale
             cabinet_y = oy + cabinet.position_y * scale
+            def plan_point(local_x: float, local_y: float) -> QPointF:
+                w, d = cabinet.width, cabinet.depth
+                rotated = {
+                    0: (local_x, local_y),
+                    90: (d - local_y, local_x),
+                    180: (w - local_x, d - local_y),
+                    270: (local_y, w - local_x),
+                }[cabinet.orientation_degrees]
+                return QPointF(cabinet_x + rotated[0] * scale, cabinet_y + rotated[1] * scale)
             outline = QColor("#147D83") if selected else QColor("#425765")
             footprint_pen = QPen(outline, 3.5 if selected else 1.8)
             if catalogue_item.category == "Wall Cabinets":
                 footprint_pen.setStyle(Qt.PenStyle.DashLine)
             fill = QColor(PLAN_FINISH_COLOURS[cabinet.material])
             if catalogue_item.front_style == "corner":
-                inset = min(cw, cd) * 0.42
+                inset = min(cabinet.width, cabinet.depth) * 0.42
                 cabinet_item = scene.addPolygon(QPolygonF([
-                    QPointF(cabinet_x, cabinet_y), QPointF(cabinet_x + cw, cabinet_y),
-                    QPointF(cabinet_x + cw, cabinet_y + cd), QPointF(cabinet_x + inset, cabinet_y + cd),
-                    QPointF(cabinet_x + inset, cabinet_y + inset), QPointF(cabinet_x, cabinet_y + inset),
+                    plan_point(0, 0), plan_point(cabinet.width, 0),
+                    plan_point(cabinet.width, cabinet.depth), plan_point(inset, cabinet.depth),
+                    plan_point(inset, inset), plan_point(0, inset),
                 ]), footprint_pen, fill)
             else:
                 cabinet_item = scene.addRect(cabinet_x, cabinet_y, cw, cd, footprint_pen, fill)
@@ -238,12 +248,12 @@ class RoomPlanView(QGraphicsView):
             # target remains deterministic regardless of project list order.
             cabinet_item.setZValue(20 if catalogue_item.category == "Wall Cabinets" else 10)
             self._cabinet_items[cabinet.cabinet_id] = cabinet_item
-            front_line = scene.addLine(cabinet_x, cabinet_y, cabinet_x + cw, cabinet_y, QPen(QColor("#0B5559"), 3))
+            front_line = scene.addLine(QLineF(plan_point(0, 0), plan_point(cabinet.width, 0)), QPen(QColor("#0B5559"), 3))
             front_line.setZValue(cabinet_item.zValue() + 1)
             divisions = cabinet.drawer_count if catalogue_item.front_style == "drawers" else cabinet.door_count
             for index in range(1, divisions):
-                x = cabinet_x + cw * index / divisions
-                scene.addLine(x, cabinet_y, x, cabinet_y + min(10, cd), QPen(QColor("#FFFFFF"), 1.2))
+                x = cabinet.width * index / divisions
+                scene.addLine(QLineF(plan_point(x, 0), plan_point(x, min(10 / scale, cabinet.depth))), QPen(QColor("#FFFFFF"), 1.2))
             compact_names = {
                 "base_2_door": "2-DOOR BASE",
                 "base_3_drawer": "3-DRAWER BASE",
@@ -505,7 +515,7 @@ class RoomPlanView(QGraphicsView):
         colour.setAlpha(105)
         x = self._ox + candidate.position_x * self._scale
         y = self._oy + candidate.position_y * self._scale
-        width, depth = candidate.width * self._scale, candidate.depth * self._scale
+        width, depth = candidate.footprint_width * self._scale, candidate.footprint_depth * self._scale
         self._preview_item = self.scene().addRect(
             x, y, width, depth,
             QPen(QColor("#16766D" if valid else "#9A2F29"), 2.4, Qt.PenStyle.DashLine),
@@ -570,8 +580,8 @@ class RoomPlanView(QGraphicsView):
             return
         if self._pending_type_id:
             candidate = create_catalogue_cabinet(self._pending_type_id, "PREVIEW")
-            candidate.position_x = round(model_point.x() - candidate.width / 2)
-            candidate.position_y = round(model_point.y() - candidate.depth / 2)
+            candidate.position_x = round(model_point.x() - candidate.footprint_width / 2)
+            candidate.position_y = round(model_point.y() - candidate.footprint_depth / 2)
         elif self._dragging_id:
             candidate = deepcopy(self._cabinet_for_id(self._dragging_id))
             candidate.position_x = round(model_point.x() - self._drag_offset.x())
@@ -836,8 +846,8 @@ class Cabinet3DView(QWidget):
 
     def update_cabinet(self, cabinet: Cabinet, reset_camera: bool = False) -> None:
         room = Room(
-            width=max(1200, cabinet.position_x + cabinet.width),
-            depth=max(1200, cabinet.position_y + cabinet.depth),
+            width=max(1200, cabinet.position_x + cabinet.footprint_width),
+            depth=max(1200, cabinet.position_y + cabinet.footprint_depth),
         )
         self.update_scene(room, [cabinet], cabinet.cabinet_id, reset_camera)
 
@@ -1132,7 +1142,7 @@ class Cabinet3DView(QWidget):
         base_units = [item for item in self._cabinets if get_catalogue_item(item.cabinet_type_id).category in ("Base Cabinets", "Vanity") and item.elevation_z == 0]
         if base_units:
             bx0 = min(item.position_x for item in base_units) - origin_x
-            bx1 = max(item.position_x + item.width for item in base_units) - origin_x
+            bx1 = max(item.position_x + item.footprint_width for item in base_units) - origin_x
             backsplash = self._box(bx0, bx1, y1 - 10, y1 + 2, 760, 1360)
             self._add_environment_mesh(backsplash, name="presentation-backsplash", colour="#D6D0C6", wall=True, opacity=0.82)
 
@@ -1255,6 +1265,32 @@ class Cabinet3DView(QWidget):
                     )
 
     def _add_cabinet_geometry(self, cabinet: Cabinet, selected: bool) -> None:
+        before = set(self.plotter.renderer.actors)
+        self._add_cabinet_geometry_unrotated(cabinet, selected)
+        if cabinet.orientation_degrees == 0:
+            return
+        origin_x = min(item.position_x for item in self._cabinets)
+        origin_y = min(item.position_y for item in self._cabinets)
+        px, py = cabinet.position_x - origin_x, cabinet.position_y - origin_y
+        w, d = cabinet.width, cabinet.depth
+        # Rotate the actual cabinet actors (carcass, doors, handles, shelves,
+        # selection) into the model's persisted, axis-aligned footprint.
+        matrices = {
+            90: ((0, -1, px + py + d), (1, 0, py - px)),
+            180: ((-1, 0, 2 * px + w), (0, -1, 2 * py + d)),
+            270: ((0, 1, px - py), (-1, 0, py + px + w)),
+        }
+        rows = matrices[cabinet.orientation_degrees]
+        matrix = vtkMatrix4x4()
+        for row_index, (xx, yy, offset) in enumerate(rows):
+            matrix.SetElement(row_index, 0, xx)
+            matrix.SetElement(row_index, 1, yy)
+            matrix.SetElement(row_index, 3, offset)
+        for name, actor in self.plotter.renderer.actors.items():
+            if name not in before and hasattr(actor, "SetUserMatrix"):
+                actor.SetUserMatrix(matrix)
+
+    def _add_cabinet_geometry_unrotated(self, cabinet: Cabinet, selected: bool) -> None:
         w, h, d, t = cabinet.width, cabinet.height, cabinet.depth, cabinet.board_thickness
         item = get_catalogue_item(cabinet.cabinet_type_id)
         origin_x = min(item.position_x for item in self._cabinets)
@@ -1391,9 +1427,9 @@ class Cabinet3DView(QWidget):
         origin_y = min(item.position_y for item in self._cabinets)
         return (
             0,
-            max(item.position_x + item.width for item in self._cabinets) - origin_x,
+            max(item.position_x + item.footprint_width for item in self._cabinets) - origin_x,
             0,
-            max(item.position_y + item.depth for item in self._cabinets) - origin_y,
+            max(item.position_y + item.footprint_depth for item in self._cabinets) - origin_y,
             max(item.elevation_z + item.height for item in self._cabinets),
         )
 

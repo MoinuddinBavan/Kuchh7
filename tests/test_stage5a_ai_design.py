@@ -24,15 +24,14 @@ from kuchhe7.quotation import calculate_quotation
 from kuchhe7.ui.main_window import MainWindow
 
 
-def test_local_interpretation_uses_catalogue_and_labels_rotation_limit():
+def test_local_interpretation_uses_catalogue_and_orients_l_return():
     project = Project.empty()
     intent = LocalRuleBasedProvider().interpret(
         "Modern L-shaped kitchen in Cashmere with a plant and oven", project
     )
     assert intent.layout == "L footprint"
     assert intent.items[0].type_id == "corner_base"
-    assert all(item.orientation_degrees == 0 for item in intent.items)
-    assert any("rotation" in warning for warning in intent.warnings)
+    assert any(item.orientation_degrees == 270 for item in intent.items)
     assert any(item.type_id == "plant_pot" for item in intent.items)
     assert all(item.finish == "Cashmere" for item in intent.items if item.type_id.endswith("base"))
 
@@ -65,7 +64,7 @@ def test_unsupported_prompt_and_catalogue_ids_show_warnings_without_changes():
     assert project.to_dict() == before
 
 
-def test_remote_response_ignores_invented_dimensions_and_rejects_invalid_geometry():
+def test_remote_response_ignores_invented_dimensions_and_validates_rotated_geometry():
     project = Project.empty()
     response = {"layout": "Straight", "items": [
         {"type_id": "base_2_door", "x": 3000, "y": 2700, "width": 5000},
@@ -75,11 +74,9 @@ def test_remote_response_ignores_invented_dimensions_and_rejects_invalid_geometr
     intent = parse_provider_response(response)
     proposal = build_proposal(project, intent, source="Mock AI", allow_reposition=False)
     assert len(proposal.items) == 1
-    assert proposal.items[0].type_id == "base_2_door"
-    assert proposal.items[0].width == 900  # Catalogue authority, not 5000.
-    assert proposal.items[0].finish == "Walnut"
+    assert proposal.items[0].type_id == "base_3_drawer"
+    assert proposal.items[0].orientation_degrees == 90
     assert any("custom dimensions ignored" in warning for warning in proposal.warnings)
-    assert any("rotation 90" in warning for warning in proposal.warnings)
     assert any("no valid room position" in warning for warning in proposal.warnings)
 
 

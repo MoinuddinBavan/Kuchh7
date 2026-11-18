@@ -41,7 +41,7 @@ def connected_base_runs(
         if cabinet.elevation_z == 0
         and get_catalogue_item(cabinet.cabinet_type_id).category in ("Base Cabinets", "Vanity")
     ]
-    eligible.sort(key=lambda cabinet: (cabinet.position_y + cabinet.depth, cabinet.height, cabinet.position_x))
+    eligible.sort(key=lambda cabinet: (cabinet.position_y + cabinet.footprint_depth, cabinet.height, cabinet.position_x))
 
     runs: list[list[Cabinet]] = []
     for cabinet in eligible:
@@ -50,13 +50,14 @@ def connected_base_runs(
             continue
         previous = runs[-1][-1]
         same_back = abs(
-            (cabinet.position_y + cabinet.depth) - (previous.position_y + previous.depth)
+            (cabinet.position_y + cabinet.footprint_depth) - (previous.position_y + previous.footprint_depth)
         ) <= alignment_tolerance
         same_top = abs(
             (cabinet.elevation_z + cabinet.height) - (previous.elevation_z + previous.height)
         ) <= alignment_tolerance
-        gap = cabinet.position_x - (previous.position_x + previous.width)
-        if same_back and same_top and -gap_tolerance <= gap <= gap_tolerance:
+        gap = cabinet.position_x - (previous.position_x + previous.footprint_width)
+        if (cabinet.orientation_degrees == previous.orientation_degrees == 0
+                and same_back and same_top and -gap_tolerance <= gap <= gap_tolerance):
             runs[-1].append(cabinet)
         else:
             runs.append([cabinet])
@@ -65,9 +66,9 @@ def connected_base_runs(
         BaseRun(
             cabinet_ids=tuple(cabinet.cabinet_id for cabinet in run),
             x0=min(cabinet.position_x for cabinet in run),
-            x1=max(cabinet.position_x + cabinet.width for cabinet in run),
+            x1=max(cabinet.position_x + cabinet.footprint_width for cabinet in run),
             y0=min(cabinet.position_y for cabinet in run),
-            y1=max(cabinet.position_y + cabinet.depth for cabinet in run),
+            y1=max(cabinet.position_y + cabinet.footprint_depth for cabinet in run),
             top_z=max(cabinet.elevation_z + cabinet.height for cabinet in run),
         )
         for run in runs

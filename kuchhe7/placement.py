@@ -17,11 +17,15 @@ class SnapResult:
 
 def volumes_intersect(first: Cabinet, second: Cabinet) -> bool:
     """Return True only when cabinet bounding volumes intersect on X, Y and Z."""
+    first_width = getattr(first, "footprint_width", first.width)
+    first_depth = getattr(first, "footprint_depth", first.depth)
+    second_width = getattr(second, "footprint_width", second.width)
+    second_depth = getattr(second, "footprint_depth", second.depth)
     return (
-        first.position_x < second.position_x + second.width
-        and first.position_x + first.width > second.position_x
-        and first.position_y < second.position_y + second.depth
-        and first.position_y + first.depth > second.position_y
+        first.position_x < second.position_x + second_width
+        and first.position_x + first_width > second.position_x
+        and first.position_y < second.position_y + second_depth
+        and first.position_y + first_depth > second.position_y
         and first.elevation_z < second.elevation_z + second.height
         and first.elevation_z + first.height > second.elevation_z
     )
@@ -33,7 +37,7 @@ def placement_error(room: Room, cabinets: list[Cabinet], candidate: Cabinet,
 
     if candidate.position_x < 0 or candidate.position_y < 0:
         return f"{candidate.cabinet_id} is outside the room boundaries."
-    if candidate.position_x + candidate.width > room.width or candidate.position_y + candidate.depth > room.depth:
+    if candidate.position_x + candidate.footprint_width > room.width or candidate.position_y + candidate.footprint_depth > room.depth:
         return f"{candidate.cabinet_id} is outside the {room.width} × {room.depth} mm room boundaries."
     for other in cabinets:
         if other.cabinet_id != candidate.cabinet_id and volumes_intersect(candidate, other):
@@ -86,22 +90,22 @@ def snap_position(
         return SnapResult(round(raw_x), round(raw_y))
 
     tolerance_mm = tolerance_pixels / max(scale_pixels_per_mm, 0.0001)
-    x_targets = {0, room.width - candidate.width}
-    y_targets = {0, room.depth - candidate.depth}
+    x_targets = {0, room.width - candidate.footprint_width}
+    y_targets = {0, room.depth - candidate.footprint_depth}
     for other in cabinets:
         if other.cabinet_id == candidate.cabinet_id:
             continue
         x_targets.update({
             other.position_x,
-            other.position_x + other.width,
-            other.position_x - candidate.width,
-            other.position_x + other.width - candidate.width,
+            other.position_x + other.footprint_width,
+            other.position_x - candidate.footprint_width,
+            other.position_x + other.footprint_width - candidate.footprint_width,
         })
         y_targets.update({
             other.position_y,
-            other.position_y + other.depth,
-            other.position_y - candidate.depth,
-            other.position_y + other.depth - candidate.depth,
+            other.position_y + other.footprint_depth,
+            other.position_y - candidate.footprint_depth,
+            other.position_y + other.footprint_depth - candidate.footprint_depth,
         })
 
     def nearest(value: float, targets: set[int]) -> tuple[float, int | None]:

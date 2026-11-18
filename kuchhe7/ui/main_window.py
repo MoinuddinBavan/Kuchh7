@@ -8,6 +8,7 @@ from PySide6.QtCore import QEvent, QSize, Qt
 from PySide6.QtGui import QAction, QFont, QIcon, QKeySequence, QUndoStack
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -50,6 +51,7 @@ from ..models import MATERIALS, MAX_CABINETS, PROJECT_TYPES, HardwareAssignment,
 from ..product_libraries import APPEARANCE_COLOURS, APPLIANCES, FURNITURE, HARDWARE, LIBRARIES, PROPS, get_product, products_for
 from ..openings import DOOR_SWINGS, WALL_IDS, WALL_LABELS, wall_length
 from ..persistence import load_project, save_project
+from ..rendering import capture_view_png
 from ..platform_support import is_macos, platform_shortcut
 from .cad_views import Cabinet3DView, RoomPlanView
 from .ai_design_workspace import AIDesignWorkspace
@@ -58,6 +60,7 @@ from .documents_workspace import DocumentsWorkspace
 from .engineering_export_dialog import EngineeringExportDialog
 from .history import AddCabinetCommand, ApplyDesignProposalCommand, HardwareAssignmentCommand, MoveCabinetCommand, OpeningChangeCommand, ProductChangeCommand, RemoveCabinetCommand
 from .manufacturing_preview import ManufacturingPreviewWidget
+from .realistic_render_workspace import RealisticRenderWorkspace
 from .sheet_nesting import SheetNestingWidget
 
 
@@ -175,6 +178,7 @@ class MainWindow(QMainWindow):
             "Open the BOM-driven demonstration sheet nesting workspace"
         )
         self.documents_action = QAction("BOM & Quotation", self, triggered=self.show_documents)
+        self.realistic_render_action = QAction("Realistic Rendering", self, triggered=self.show_realistic_rendering)
         self.front_view_action = QAction("Front", self, triggered=lambda: self.view3d.view_front())
         self.isometric_view_action = QAction("Isometric", self, triggered=lambda: self.view3d.view_isometric())
         self.fit_all_action = QAction("Fit All Cabinets", self, shortcut="F", triggered=lambda: self.view3d.fit_all_cabinets())
@@ -261,6 +265,7 @@ class MainWindow(QMainWindow):
         view_menu.addActions([self.presentation_view_action, self.presentation_camera_action, self.hide_room_walls_action])
         view_menu.addSeparator()
         view_menu.addAction(self.show_interior_action)
+        view_menu.addAction(self.realistic_render_action)
         design_menu = self.menuBar().addMenu("&Design")
         design_menu.addActions([self.load_complete_action, self.add_cabinet_action,
                                 self.duplicate_action, self.remove_cabinet_action])
@@ -407,6 +412,9 @@ class MainWindow(QMainWindow):
         self.ai_design_workspace = AIDesignWorkspace(
             self.generate_design_proposal, self.apply_design_proposal, self.reject_design_proposal
         )
+        self.realistic_render_workspace = RealisticRenderWorkspace(
+            self.view3d, lambda: project_fingerprint(self.project), self._capture_render_scene
+        )
         self.workspace_tabs = QTabWidget()
         self.workspace_tabs.setObjectName("workspaceTabs")
         self.workspace_tabs.setDocumentMode(True)
@@ -415,6 +423,7 @@ class MainWindow(QMainWindow):
         self.workspace_tabs.addTab(self.sheet_nesting, "Sheet Nesting")
         self.workspace_tabs.addTab(self.documents_workspace, "BOM & Quotation")
         self.workspace_tabs.addTab(self.ai_design_workspace, "Design Assistant")
+        self.workspace_tabs.addTab(self.realistic_render_workspace, "Realistic Rendering")
         self.workspace_tabs.currentChanged.connect(self._workspace_changed)
         self.setCentralWidget(self.workspace_tabs)
 
@@ -879,6 +888,26 @@ class MainWindow(QMainWindow):
         self.workspace_tabs.setCurrentWidget(self.ai_design_workspace)
         self.statusBar().showMessage("Design Assistant — proposals are previews until explicitly applied")
 
+    def show_realistic_rendering(self) -> None:
+        self.realistic_render_workspace.refresh_provider_status()
+        captured = self.realistic_render_workspace.capture()
+        self.workspace_tabs.setCurrentWidget(self.realistic_render_workspace)
+        self.statusBar().showMessage(
+            "Standard 3D capture ready; AI rendering requires an approved configured service"
+            if captured else "3D capture unavailable; open Design Studio and try Capture current 3D"
+        )
+
+    def _capture_render_scene(self, camera: str) -> bytes:
+        previous = self.workspace_tabs.currentWidget()
+        if previous is not self.workspace_splitter:
+            self.workspace_tabs.setCurrentWidget(self.workspace_splitter)
+            QApplication.processEvents()
+        try:
+            return capture_view_png(self.view3d, camera)
+        finally:
+            if previous is not self.workspace_splitter:
+                self.workspace_tabs.setCurrentWidget(previous)
+
     def generate_design_proposal(self, prompt: str, mode: str = "replace") -> DesignProposal | None:
         fallback_warning = None
         try:
@@ -956,7 +985,8 @@ class MainWindow(QMainWindow):
         nesting_active = index == self.workspace_tabs.indexOf(self.sheet_nesting)
         documents_active = index == self.workspace_tabs.indexOf(self.documents_workspace)
         design_assistant_active = index == self.workspace_tabs.indexOf(self.ai_design_workspace)
-        auxiliary_active = engineering_active or nesting_active or documents_active or design_assistant_active
+        rendering_active = index == self.workspace_tabs.indexOf(self.realistic_render_workspace)
+        auxiliary_active = engineering_active or nesting_active or documents_active or design_assistant_active or rendering_active
         if auxiliary_active and self.maximize_3d_action.isChecked():
             self.maximize_3d_action.setChecked(False)
         self.maximize_3d_action.setEnabled(not auxiliary_active)
@@ -1661,12 +1691,15 @@ class MainWindow(QMainWindow):
 
     def _duplicate_position(self, candidate, source, validate) -> tuple[int, int]:
         """Find a nearby valid 2D position, then scan the rectangular room."""
-        w, d = candidate.width, candidate.depth
+        w = getattr(candidate, "footprint_width", candidate.width)
+        d = getattr(candidate, "footprint_depth", candidate.depth)
+        source_w = getattr(source, "footprint_width", source.width)
+        source_d = getattr(source, "footprint_depth", source.depth)
         preferred = (
-            (source.position_x + source.width + 40, source.position_y),
+            (source.position_x + source_w + 40, source.position_y),
             (source.position_x - w - 40, source.position_y),
             (source.position_x, source.position_y - d - 40),
-            (source.position_x, source.position_y + source.depth + 40),
+            (source.position_x, source.position_y + source_d + 40),
         )
         scan = ((x, y) for y in range(0, max(0, self.project.room.depth - d) + 1, 100)
                 for x in range(0, max(0, self.project.room.width - w) + 1, 100))

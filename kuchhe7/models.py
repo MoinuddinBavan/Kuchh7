@@ -116,8 +116,19 @@ class Cabinet:
     position_y: int = 0
     cabinet_type_id: str = "base_2_door"
     elevation_z: int = 0
+    orientation_degrees: int = 0
+
+    @property
+    def footprint_width(self) -> int:
+        return self.depth if self.orientation_degrees in (90, 270) else self.width
+
+    @property
+    def footprint_depth(self) -> int:
+        return self.width if self.orientation_degrees in (90, 270) else self.depth
 
     def validate(self) -> None:
+        if self.orientation_degrees not in (0, 90, 180, 270):
+            raise ValueError("Cabinet orientation must be 0, 90, 180 or 270 degrees.")
         if not 300 <= self.width <= 3000:
             raise ValueError("Cabinet width must be between 300 and 3,000 mm.")
         if not 300 <= self.height <= 3000:

@@ -38,32 +38,33 @@ def wall_length(room: Room, wall_id: str) -> int:
 
 
 def cabinet_wall_bounds(room: Room, cabinet: Cabinet, wall_id: str) -> WallLocalBounds:
+    width, depth = cabinet.footprint_width, cabinet.footprint_depth
     if wall_id == "NORTH":
         return WallLocalBounds(
             cabinet.position_x,
-            cabinet.position_x + cabinet.width,
+            cabinet.position_x + width,
             cabinet.position_y,
-            cabinet.position_y + cabinet.depth,
+            cabinet.position_y + depth,
         )
     if wall_id == "SOUTH":
         return WallLocalBounds(
             cabinet.position_x,
-            cabinet.position_x + cabinet.width,
-            room.depth - (cabinet.position_y + cabinet.depth),
+            cabinet.position_x + width,
+            room.depth - (cabinet.position_y + depth),
             room.depth - cabinet.position_y,
         )
     if wall_id == "WEST":
         return WallLocalBounds(
             cabinet.position_y,
-            cabinet.position_y + cabinet.depth,
+            cabinet.position_y + depth,
             cabinet.position_x,
-            cabinet.position_x + cabinet.width,
+            cabinet.position_x + width,
         )
     if wall_id == "EAST":
         return WallLocalBounds(
             cabinet.position_y,
-            cabinet.position_y + cabinet.depth,
-            room.width - (cabinet.position_x + cabinet.width),
+            cabinet.position_y + depth,
+            room.width - (cabinet.position_x + width),
             room.width - cabinet.position_x,
         )
     raise ValueError(f"Unsupported wall identifier: {wall_id}")

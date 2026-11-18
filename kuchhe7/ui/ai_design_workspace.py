@@ -55,8 +55,8 @@ class AIDesignWorkspace(QWidget):
         self.summary_label = QLabel("No proposal yet. Generating does not alter the project.")
         self.summary_label.setWordWrap(True)
         controls.addWidget(self.summary_label)
-        self.table = QTableWidget(0, 7)
-        self.table.setHorizontalHeaderLabels(["ID", "Catalogue model", "X", "Y", "Z", "W × D × H (mm)", "Finish"])
+        self.table = QTableWidget(0, 8)
+        self.table.setHorizontalHeaderLabels(["ID", "Catalogue model", "X", "Y", "Z", "W × D × H (mm)", "Front", "Finish"])
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
@@ -103,7 +103,7 @@ class AIDesignWorkspace(QWidget):
             except ValueError:
                 name = get_product(item.type_id).name
             values = (item.item_id, name, item.x, item.y, item.z,
-                      f"{item.width} × {item.depth} × {item.height}", item.finish)
+                      f"{item.width} × {item.depth} × {item.height}", f"{item.orientation_degrees}°", item.finish)
             for column, value in enumerate(values):
                 self.table.setItem(row, column, QTableWidgetItem(str(value)))
         self.warning_label.setText("\n".join(f"• {warning}" for warning in proposal.warnings)

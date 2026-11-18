@@ -377,6 +377,23 @@ rules rather than approved building-code or factory-clearance calculations.
 
 ## Scope and limitations
 
+### Stage 5B presentation images
+
+Open **View → Realistic Rendering** to capture the existing PyVista kitchen at
+1600 × 900 pixels. Choose Current, Front, Isometric or Presentation camera,
+compare the source with any optional generated image, and save a PNG. The
+standard capture works without network access and is labelled as a 3D capture.
+The optional **Generate AI render** action is disabled until an approved
+image-input service is configured. Configuration and the response contract are
+in `docs/STAGE5B_RENDERING.md`. The desktop app asks before uploading an image.
+Generated images are separate presentation artifacts and do not modify project
+geometry, BOM, quotation, nesting or manufacturing exports.
+
+Stage 5A L proposals now persist cabinet orientation in 90-degree increments.
+Existing JSON files without an orientation field open with the original
+zero-degree front direction. This is a layout visualization correction, not a
+change to cabinet construction or component dimensions.
+
 The v0.9 milestone intentionally remains limited to rectangular rooms and ten
 placed furniture units. Furniture placement is top-view click/drag with wall,
 furniture-edge, and optional 100 mm grid snapping. Openings move only along their

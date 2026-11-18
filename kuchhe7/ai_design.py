@@ -94,10 +94,8 @@ class LocalRuleBasedProvider:
         l_shape = bool(re.search(r"\bl[- ]?shaped\b|\bl shape\b|\bcorner kitchen\b", text))
         layout = "L footprint" if l_shape else "Straight run"
         warnings: list[str] = []
-        if l_shape:
-            warnings.append("Cabinet rotation is not supported; the L footprint uses fixed front orientation.")
         if re.search(r"\b(rotate|rotated|90\s*degrees?|island)\b", text):
-            warnings.append("Rotation/island geometry is not supported by the current cabinet model.")
+            warnings.append("Only 0, 90, 180 and 270 degree cabinet orientation is supported; island planning is unavailable.")
         if re.search(r"\b\d+(?:\.\d+)?\s*(?:mm|cm|metres?|meters?)\b", text):
             warnings.append("Requested custom measurements are not applied; catalogue dimensions are used.")
         if "hardware" in text or "hinge" in text or "runner" in text:
@@ -110,7 +108,7 @@ class LocalRuleBasedProvider:
                 RequestedItem("base_2_door", 0, depth - 600, finish),
                 RequestedItem("base_3_drawer", 900, depth - 600, finish),
                 RequestedItem("sink_base", 1500, depth - 600, finish),
-                RequestedItem("base_2_door", width - 900, depth - 1500, finish),
+                RequestedItem("base_2_door", width - 600, depth - 1800, finish, 270),
                 RequestedItem("wall_2_door", 0, depth - 350, finish),
             ]
         else:
@@ -257,8 +255,8 @@ def build_proposal(project: Project, intent: DesignIntent, *, source: str,
     proposed: list[ProposedItem] = []
     first_cabinet_id = None
     for request in intent.items:
-        if request.orientation_degrees != 0:
-            warnings.append(f"{request.type_id}: rotation {request.orientation_degrees}° is unsupported; item skipped.")
+        if request.orientation_degrees not in (0, 90, 180, 270):
+            warnings.append(f"{request.type_id}: unsupported orientation; item skipped.")
             continue
         try:
             item = get_catalogue_item(request.type_id)
@@ -270,6 +268,9 @@ def build_proposal(project: Project, intent: DesignIntent, *, source: str,
                 continue
             if definition.library not in (APPLIANCES, PROPS):
                 warnings.append(f"{request.type_id}: hardware needs manual cabinet assignment; item skipped.")
+                continue
+            if request.orientation_degrees:
+                warnings.append(f"{request.type_id}: product orientation is unavailable; item skipped.")
                 continue
             item_id = after.next_product_id(definition.library)
             error = None
@@ -297,13 +298,14 @@ def build_proposal(project: Project, intent: DesignIntent, *, source: str,
             continue
         cabinet_id = after.next_cabinet_id()
         cabinet = create_catalogue_cabinet(request.type_id, cabinet_id)
+        cabinet.orientation_degrees = request.orientation_degrees
         if request.finish is not None:
             if request.finish in item.supported_finishes:
                 cabinet.material = request.finish
             else:
                 warnings.append(f"{request.type_id}: unsupported finish {request.finish!r}; using catalogue default.")
         error = None
-        for x, y in _positions(after, cabinet.width, cabinet.depth,
+        for x, y in _positions(after, cabinet.footprint_width, cabinet.footprint_depth,
                                 (request.x, request.y), allow_reposition):
             cabinet.position_x, cabinet.position_y = x, y
             try:
@@ -316,7 +318,8 @@ def build_proposal(project: Project, intent: DesignIntent, *, source: str,
                 first_cabinet_id = first_cabinet_id or cabinet_id
                 proposed.append(ProposedItem(cabinet_id, request.type_id, x, y,
                                              cabinet.elevation_z, cabinet.width,
-                                             cabinet.depth, cabinet.height, cabinet.material))
+                                             cabinet.depth, cabinet.height, cabinet.material,
+                                             cabinet.orientation_degrees))
                 break
             except ValueError as caught:
                 error = str(caught)
