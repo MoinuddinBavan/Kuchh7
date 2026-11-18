@@ -15,6 +15,8 @@ from ..bom import generate_project_bom
 from ..document_exports import (export_bom_pdf, export_bom_template_xlsx,
                                  export_quotation_pdf, export_quotation_xlsx)
 from ..quotation import calculate_quotation
+from ..quotation import issue_quotation_snapshot
+from .pricing_workspace import PricingWorkspace
 
 
 def _read_only_table(headers: list[str]) -> QTableWidget:
@@ -44,6 +46,9 @@ class DocumentsWorkspace(QWidget):
         outer.addWidget(self.tabs)
         self._build_bom()
         self._build_quote()
+        self.pricing_workspace = PricingWorkspace(lambda: (on_change(), self.refresh()))
+        self.tabs.addTab(self.pricing_workspace.master_page, "Price Master")
+        self.tabs.addTab(self.pricing_workspace.cost_page, "Cost Breakdown")
 
     def _build_bom(self) -> None:
         page = QWidget()
@@ -77,22 +82,25 @@ class DocumentsWorkspace(QWidget):
         self.date_edit.setPlaceholderText("YYYY-MM-DD")
         self.discount_edit = QLineEdit()
         self.tax_edit = QLineEdit()
+        self.currency_edit = QLineEdit()
+        self.currency_edit.setPlaceholderText("Three-letter currency code")
         for label, widget, key in (
             ("Customer", self.customer_edit, "customer_name"),
             ("Quotation number", self.number_edit, "quotation_number"),
             ("Date", self.date_edit, "quotation_date"),
             ("Discount %", self.discount_edit, "discount_percent"),
             ("Tax % (after discount)", self.tax_edit, "tax_percent"),
+            ("Currency", self.currency_edit, "currency"),
         ):
             form.addRow(label, widget)
             widget.editingFinished.connect(lambda key=key, widget=widget: self._update_field(key, widget))
         layout.addLayout(form)
         layout.addWidget(QLabel("Enter demo selling prices manually; client approval is required. Appliances are excluded until marked billable. Props never appear here."))
-        self.quote_table = _read_only_table(["ID", "Item", "Category", "Qty", "Billable", "Unit price", "Line total"])
+        self.quote_table = _read_only_table(["ID", "Item", "Category", "Qty", "Billable", "Unit price", "Line total", "Pricing mode"])
         quote_header = self.quote_table.horizontalHeader()
         quote_header.setStretchLastSection(False)
         quote_header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        for column, width in enumerate((65, 280, 150, 55, 170, 130, 135)):
+        for column, width in enumerate((65, 280, 150, 55, 170, 130, 135, 115)):
             self.quote_table.setColumnWidth(column, width)
         quote_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.quote_table)
@@ -102,6 +110,8 @@ class DocumentsWorkspace(QWidget):
         self.warning_label = QLabel()
         self.warning_label.setStyleSheet("color: #A03E35; font-weight: 600;")
         layout.addWidget(self.warning_label)
+        self.issued_label = QLabel("No issued quotation snapshot. Draft values remain live.")
+        layout.addWidget(self.issued_label)
         actions = QHBoxLayout()
         for label, callback in (("Export Quotation Excel", self.export_quote_excel),
                                 ("Export Quotation PDF", self.export_quote_pdf)):
@@ -109,11 +119,15 @@ class DocumentsWorkspace(QWidget):
             button.clicked.connect(callback)
             actions.addWidget(button)
         actions.addStretch()
+        issue_button = QPushButton("Record issued snapshot…")
+        issue_button.clicked.connect(self._issue_snapshot)
+        actions.addWidget(issue_button)
         layout.addLayout(actions)
         self.tabs.addTab(page, "Customer Quotation")
 
     def set_project(self, project) -> None:
         self.project = project
+        self.pricing_workspace.set_project(project)
         self.refresh()
 
     def refresh(self) -> None:
@@ -126,7 +140,8 @@ class DocumentsWorkspace(QWidget):
                                   (self.number_edit, data.quotation_number),
                                   (self.date_edit, data.quotation_date),
                                   (self.discount_edit, data.discount_percent),
-                                  (self.tax_edit, data.tax_percent)):
+                                  (self.tax_edit, data.tax_percent),
+                                  (self.currency_edit, data.currency)):
                 if not widget.hasFocus():
                     widget.setText(str(value))
             items = generate_project_bom(self.project)
@@ -153,19 +168,30 @@ class DocumentsWorkspace(QWidget):
                     check.setChecked(line.billable)
                     check.toggled.connect(lambda checked, item_id=line.item_id: self._set_billable(item_id, checked))
                     self.quote_table.setCellWidget(row, 4, check)
-                price = QLineEdit(data.unit_prices.get(line.item_id, ""))
-                price.setPlaceholderText("Enter price")
+                price = QLineEdit(data.unit_prices.get(line.item_id, "") if line.pricing_mode == "manual"
+                                  else (str(line.unit_price) if line.unit_price is not None else ""))
+                price.setPlaceholderText("Enter price" if line.pricing_mode == "manual" else "Price pending")
+                price.setEnabled(line.pricing_mode == "manual")
                 price.editingFinished.connect(lambda item_id=line.item_id, field=price: self._set_price(item_id, field.text()))
                 self.quote_table.setCellWidget(row, 5, price)
                 self.quote_table.setItem(row, 6, QTableWidgetItem(str(line.total) if line.total is not None else "—"))
+                self.quote_table.setItem(row, 7, QTableWidgetItem(line.pricing_mode.title()))
             self.totals_label.setText(
                 f"Subtotal {summary.subtotal}    Discount {summary.discount}    "
                 f"Tax {summary.tax}    Total {summary.total}"
             )
             self.warning_label.setText(
-                "INCOMPLETE — prices missing for " + ", ".join(summary.unpriced_ids)
-                if summary.unpriced_ids else "Prices are demonstration inputs; currency and terms require client approval."
+                "INCOMPLETE — " + "; ".join(
+                    (["prices missing for " + ", ".join(summary.unpriced_ids)] if summary.unpriced_ids else [])
+                    + list(summary.incomplete_reasons))
+                if summary.unpriced_ids or summary.incomplete_reasons
+                else "Prices are demonstration inputs; currency and terms require client approval."
             )
+            snapshot = data.issued_snapshot
+            self.issued_label.setText(
+                f"Issued snapshot {snapshot['quotation_number']}: {snapshot['total']} {snapshot.get('currency', '')} — frozen"
+                if snapshot else "No issued quotation snapshot. Draft values remain live.")
+            self.pricing_workspace.refresh()
         finally:
             self._loading = False
 
@@ -253,3 +279,18 @@ class DocumentsWorkspace(QWidget):
 
     def export_quote_pdf(self) -> None:
         self._export("Quotation", "pdf", export_quotation_pdf)
+
+    def _issue_snapshot(self) -> None:
+        if self.project is None:
+            return
+        if QMessageBox.question(self, "Record issued quotation snapshot",
+                                "Freeze the current complete quotation as an issued snapshot? Future edits will change only the draft.",
+                                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            issue_quotation_snapshot(self.project)
+        except ValueError as error:
+            self.warning_label.setText(str(error)); return
+        self._on_change()
+        self.refresh()

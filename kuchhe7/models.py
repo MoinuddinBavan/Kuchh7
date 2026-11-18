@@ -8,6 +8,7 @@ from .catalogue import FINISHES, LEGACY_FINISH_ALIASES, get_catalogue_item, norm
 from .openings import DOOR_SWINGS, OPENING_KINDS, WALL_IDS, opening_error, opening_furniture_conflict, wall_length
 from .placement import placement_error, product_placement_error, volumes_intersect
 from .product_libraries import APPEARANCE_COLOURS, APPLIANCES, HARDWARE, PROPS, get_product
+from .price_master import PriceMaster
 from .quotation import QuotationData
 
 
@@ -237,10 +238,13 @@ class Project:
     placed_products: list[PlacedProduct] = field(default_factory=list)
     hardware_assignments: list[HardwareAssignment] = field(default_factory=list)
     quotation: QuotationData = field(default_factory=QuotationData)
+    price_master: PriceMaster = field(default_factory=PriceMaster)
 
     def __post_init__(self) -> None:
         if not isinstance(self.quotation, QuotationData):
             self.quotation = QuotationData(**self.quotation)
+        if not isinstance(self.price_master, PriceMaster):
+            self.price_master = PriceMaster.from_dict(self.price_master)
         self.placed_products = [item if isinstance(item, PlacedProduct) else PlacedProduct(**item) for item in self.placed_products]
         self.hardware_assignments = [item if isinstance(item, HardwareAssignment) else HardwareAssignment(**item) for item in self.hardware_assignments]
         if not self.cabinets and self.cabinet is not None:
@@ -465,6 +469,7 @@ class Project:
         for assignment in self.hardware_assignments:
             assignment.validate(self.cabinets)
         self.quotation.validate(self)
+        self.price_master.validate()
         if self.cabinets:
             selected_id = self.selected_cabinet_id
             if not any(item.cabinet_id == selected_id for item in self.cabinets):
@@ -479,7 +484,7 @@ class Project:
     def to_dict(self) -> dict[str, Any]:
         self.validate()
         return {
-            "schema_version": 7,
+            "schema_version": 8,
             "name": self.name,
             "project_type": self.project_type,
             "room": asdict(self.room),
@@ -489,6 +494,7 @@ class Project:
             "placed_products": [asdict(item) for item in self.placed_products],
             "hardware_assignments": [asdict(item) for item in self.hardware_assignments],
             "quotation": asdict(self.quotation),
+            "price_master": self.price_master.to_dict(),
         }
 
     @classmethod
@@ -523,6 +529,7 @@ class Project:
             placed_products=[PlacedProduct(**item) for item in data.get("placed_products", [])],
             hardware_assignments=[HardwareAssignment(**item) for item in data.get("hardware_assignments", [])],
             quotation=QuotationData(**data.get("quotation", {})),
+            price_master=PriceMaster.from_dict(data.get("price_master", {})),
         )
         project.validate()
         return project

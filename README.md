@@ -1,5 +1,14 @@
 # kuchhe7 Client Approval Demo v1.0.1
 
+## Stage 7B.1 draft costing
+
+The existing **BOM & Quotation** workspace now includes **Price Master** and
+**Cost Breakdown** tabs. Rates start empty; manual quotation prices from older
+projects remain unchanged. See [Stage 7B.1 costing guide](docs/STAGE7B1_COSTING.md)
+for the import format, calculation rules, synthetic screenshot command, and
+client data still required. This is a demonstration foundation, not approved
+factory costing.
+
 ## Stage 5A design assistant
 
 Open **Design > Design Assistant…** to type a request, choose **Replace** or

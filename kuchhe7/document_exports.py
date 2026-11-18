@@ -67,12 +67,12 @@ def export_quotation_xlsx(project, path: str | Path) -> Path:
     sheet.append(["Project", project.name, "Customer", data.customer_name])
     sheet.append(["Quote no.", data.quotation_number, "Date", data.quotation_date])
     sheet.append([])
-    sheet.append(["ID", "Sellable item", "Category", "Qty", "Unit price", "Line total", "Status"])
+    sheet.append(["ID", "Sellable item", "Category", "Qty", "Unit price", "Line total", "Status", "Pricing mode"])
     for line in summary.lines:
         sheet.append([line.item_id, line.description, line.category, line.quantity,
                       float(line.unit_price) if line.unit_price is not None else None,
                       float(line.total) if line.total is not None else None,
-                      "Billable" if line.billable else "Client supplied / excluded"])
+                      "Billable" if line.billable else "Client supplied / excluded", line.pricing_mode])
     row = sheet.max_row + 2
     for label, value in (("Subtotal", summary.subtotal),
                          (f"Discount ({data.discount_percent}%)", summary.discount),
@@ -82,13 +82,16 @@ def export_quotation_xlsx(project, path: str | Path) -> Path:
         sheet.cell(row, 5, label)
         sheet.cell(row, 6, float(value)).number_format = '#,##0.00'
         row += 1
-    if summary.unpriced_ids:
-        sheet.cell(row + 1, 1, "INCOMPLETE — prices missing: " + ", ".join(summary.unpriced_ids))
+    if summary.unpriced_ids or summary.incomplete_reasons:
+        sheet.cell(row + 1, 1, "INCOMPLETE — " + "; ".join(
+            (["prices missing: " + ", ".join(summary.unpriced_ids)] if summary.unpriced_ids else [])
+            + list(summary.incomplete_reasons)))
     sheet.cell(row + 2, 1, "Demonstration quotation. Currency and commercial terms require client approval.")
+    sheet.cell(row + 3, 1, f"Draft currency: {data.currency or 'not configured'}")
     for cell in sheet[5]:
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor=TEAL)
-    for column, width in zip("ABCDEFG", (15, 32, 24, 10, 18, 18, 30)):
+    for column, width in zip("ABCDEFGH", (15, 32, 24, 10, 18, 18, 30, 18)):
         sheet.column_dimensions[column].width = width
     for cells in sheet.iter_rows(min_row=6, max_row=5 + len(summary.lines), min_col=5, max_col=6):
         for cell in cells:
@@ -208,14 +211,17 @@ def export_quotation_pdf(project, path: str | Path) -> Path:
     rows = [(line.item_id, line.description, line.category, str(line.quantity),
              str(line.unit_price) if line.unit_price is not None else "—",
              str(line.total) if line.total is not None else "—",
-             "Billable" if line.billable else "Excluded") for line in summary.lines]
+             line.pricing_mode.title() if line.billable else "Excluded")
+            for line in summary.lines]
     footer = [f"Subtotal: {summary.subtotal}",
               f"Discount ({data.discount_percent}%): {summary.discount}",
               f"Tax after discount ({data.tax_percent}%): {summary.tax}",
               f"TOTAL: {summary.total}"]
     if summary.unpriced_ids:
         footer.append("INCOMPLETE — missing prices: " + ", ".join(summary.unpriced_ids))
+    footer.extend("INCOMPLETE — " + reason for reason in summary.incomplete_reasons)
+    footer.append("Draft currency: " + (data.currency or "not configured"))
     footer.append("Demonstration quotation; currency and commercial terms require client approval.")
     return _pdf(path, "KÜCHE7 | CUSTOMER QUOTATION",
                 f"{project.name}  /  {data.customer_name or 'Customer pending'}  /  {data.quotation_number or 'No number'}  /  {data.quotation_date}",
-                ("ID", "Item", "Category", "Qty", "Unit price", "Total", "Status"), rows, footer)
+                ("ID", "Item", "Category", "Qty", "Unit price", "Total", "Mode / status"), rows, footer)
