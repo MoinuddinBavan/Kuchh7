@@ -1,5 +1,27 @@
 # kuchhe7 Client Approval Demo v1.0.1
 
+## Stage 2 design workflow
+
+The **Libraries** tab is the single visible product browser. It filters by
+library, furniture family and category; the original catalogue widgets remain
+available to existing automation. Select a model, click **Place selected product
+in 2D**, then click a valid plan position. A red preview explains collisions.
+Select a placed cabinet, appliance or prop in the plan or Project tree to edit
+dimensions and coordinates. Use **Edit > Duplicate Selected** (`Ctrl+D`) or the
+Properties duplicate button; Delete/Remove and Undo/Redo work for placed
+products. The 3D viewport refreshes from the same project data. Appliances
+offer visual finish choices; props retain their visual-only treatment.
+
+Basic 3D volume checks reject genuine cabinet/product and product/product
+intersections and out-of-room placements. Countertop props remain above base
+cabinets; a sample tap can share a sink's volume. These are demonstration
+geometry checks, not appliance-installation or building standards. Capture the
+workflow screenshots with:
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.capture_stage2_workflow
+```
+
 ## Stage 1 product libraries (demonstration extension)
 
 The Project explorer now also has a **Libraries** tab with four groups:

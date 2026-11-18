@@ -10,6 +10,15 @@ APPLIANCES = "Appliances, Sinks & Taps"
 PROPS = "Decorative Props"
 HARDWARE = "Hardware & Accessories"
 LIBRARIES = (FURNITURE, APPLIANCES, PROPS, HARDWARE)
+APPEARANCE_COLOURS = {
+    "Stainless": "#AAB5B8",
+    "Graphite": "#43474A",
+    "Warm White": "#E8E5DE",
+}
+
+
+def product_colour(type_id: str, appearance: str = "Catalogue") -> str:
+    return get_product(type_id).colour if appearance == "Catalogue" else APPEARANCE_COLOURS[appearance]
 
 
 @dataclass(frozen=True)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from itertools import chain
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QSize, Qt
@@ -43,13 +44,13 @@ from ..bom import generate_project_bom
 from ..catalogue import CATEGORIES, FURNITURE_FAMILIES, catalogue_items, create_catalogue_cabinet, furniture_items, get_catalogue_item
 from ..exports import export_bom_xlsx, export_front_elevation_dxf
 from ..models import MATERIALS, MAX_CABINETS, PROJECT_TYPES, HardwareAssignment, Opening, PlacedProduct, Project
-from ..product_libraries import APPLIANCES, FURNITURE, HARDWARE, LIBRARIES, PROPS, get_product, products_for
+from ..product_libraries import APPEARANCE_COLOURS, APPLIANCES, FURNITURE, HARDWARE, LIBRARIES, PROPS, get_product, products_for
 from ..openings import DOOR_SWINGS, WALL_IDS, WALL_LABELS, wall_length
 from ..persistence import load_project, save_project
 from ..platform_support import is_macos, platform_shortcut
 from .cad_views import Cabinet3DView, RoomPlanView
 from .catalogue_preview import catalogue_thumbnail, product_thumbnail
-from .history import AddCabinetCommand, HardwareAssignmentCommand, MoveCabinetCommand, OpeningChangeCommand, RemoveCabinetCommand
+from .history import AddCabinetCommand, HardwareAssignmentCommand, MoveCabinetCommand, OpeningChangeCommand, ProductChangeCommand, RemoveCabinetCommand
 from .manufacturing_preview import ManufacturingPreviewWidget
 from .sheet_nesting import SheetNestingWidget
 
@@ -117,8 +118,10 @@ class MainWindow(QMainWindow):
             "Load Complete Kitchen Demo", self, triggered=self.load_complete_kitchen_demo
         )
         self.add_cabinet_action = QAction("Place Selected", self, triggered=self.begin_catalogue_placement)
-        self.remove_cabinet_action = QAction("Remove Cabinet", self, triggered=self.remove_selected_cabinet)
-        self.delete_cabinet_action = QAction("Delete selected cabinet", self, triggered=self.remove_selected_cabinet)
+        self.remove_cabinet_action = QAction("Remove Selected", self, triggered=self.remove_selected_object)
+        self.delete_cabinet_action = QAction("Delete selected object", self, triggered=self.remove_selected_object)
+        self.duplicate_action = QAction("Duplicate Selected", self, triggered=self.duplicate_selected_object)
+        self.duplicate_action.setShortcut(platform_shortcut("Ctrl+D"))
         self.select_wall_action = QAction("Select Wall", self, triggered=self.begin_wall_selection)
         self.add_door_action = QAction("Add Door", self, triggered=lambda: self.begin_opening_placement("door"))
         self.add_window_action = QAction("Add Window", self, triggered=lambda: self.begin_opening_placement("window"))
@@ -230,6 +233,7 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.exit_action)
         edit_menu = self.menuBar().addMenu("&Edit")
         edit_menu.addActions([self.undo_action, self.redo_action])
+        edit_menu.addAction(self.duplicate_action)
         edit_menu.addSeparator()
         edit_menu.addAction("Select Cabinet", lambda: self.width_spin.setFocus())
         view_menu = self.menuBar().addMenu("&View")
@@ -242,7 +246,8 @@ class MainWindow(QMainWindow):
         view_menu.addSeparator()
         view_menu.addAction(self.show_interior_action)
         design_menu = self.menuBar().addMenu("&Design")
-        design_menu.addActions([self.load_complete_action, self.add_cabinet_action, self.remove_cabinet_action])
+        design_menu.addActions([self.load_complete_action, self.add_cabinet_action,
+                                self.duplicate_action, self.remove_cabinet_action])
         design_menu.addSeparator()
         opening_menu = design_menu.addMenu("Room Openings")
         opening_menu.addActions([
@@ -360,6 +365,7 @@ class MainWindow(QMainWindow):
         self.plan_view.productSelected.connect(self.select_product)
         self.plan_view.productPlacementRequested.connect(self._place_product)
         self.plan_view.productMoveRequested.connect(self.move_product)
+        self.plan_view.placementRejected.connect(lambda message: self._show_placement_error(ValueError(message)))
         self.view3d = Cabinet3DView()
         self.plan_panel = self._canvas_panel(
             "2D ROOM PLAN", "Click to select • drag to move • Esc to cancel", self.plan_view
@@ -429,6 +435,7 @@ class MainWindow(QMainWindow):
         self.library_combo.addItems(LIBRARIES)
         self.library_family_combo = QComboBox()
         self.library_family_combo.addItems(FURNITURE_FAMILIES)
+        self.library_category_combo = QComboBox()
         self.library_list = QListWidget()
         self.library_list.setAlternatingRowColors(True)
         self.library_list.setIconSize(QSize(76, 60))
@@ -444,13 +451,18 @@ class MainWindow(QMainWindow):
         library_layout.addWidget(QLabel("PRODUCT LIBRARY"))
         library_layout.addWidget(self.library_combo)
         library_layout.addWidget(self.library_family_combo)
+        library_layout.addWidget(self.library_category_combo)
         library_layout.addWidget(self.library_list, 1)
         library_layout.addWidget(self.library_description)
         library_layout.addWidget(self.hardware_quantity_label)
         library_layout.addWidget(self.hardware_quantity_spin)
         library_layout.addWidget(self.library_add_button)
         library_layout.addWidget(self.library_remove_hardware_button)
+        self.library_page = library_page
         self.explorer_tabs.addTab(library_page, "Libraries")
+        # The original catalogue widgets remain available to legacy scripts,
+        # while users browse one unified product-library interface.
+        self.explorer_tabs.setTabVisible(1, False)
         self.explorer_dock.setWidget(self.explorer_tabs)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.explorer_dock)
         self.catalogue_category_combo.currentTextChanged.connect(self._populate_catalogue)
@@ -460,13 +472,16 @@ class MainWindow(QMainWindow):
         self._populate_catalogue()
         self.library_combo.currentTextChanged.connect(self._populate_product_library)
         self.library_family_combo.currentTextChanged.connect(self._populate_product_library)
+        self.library_category_combo.currentTextChanged.connect(
+            lambda _text: self._populate_product_library(update_categories=False)
+        )
         self.library_list.currentItemChanged.connect(self._library_selection_changed)
         self.library_add_button.clicked.connect(self.begin_library_placement)
         self.library_remove_hardware_button.clicked.connect(self.remove_selected_hardware_assignment)
         self.library_list.itemDoubleClicked.connect(lambda _item: self.begin_library_placement())
         self._populate_product_library()
 
-    def _populate_product_library(self, *_args) -> None:
+    def _populate_product_library(self, *_args, update_categories: bool = True) -> None:
         library = self.library_combo.currentText()
         self.library_family_combo.setVisible(library == FURNITURE)
         self.library_list.clear()
@@ -477,6 +492,14 @@ class MainWindow(QMainWindow):
         else:
             rows = [(item.type_id, item.name, item.category, item.width, item.depth, item.height)
                     for item in products_for(library)]
+        if update_categories:
+            self.library_category_combo.blockSignals(True)
+            self.library_category_combo.clear()
+            self.library_category_combo.addItems(["All categories", *dict.fromkeys(row[2] for row in rows)])
+            self.library_category_combo.blockSignals(False)
+        selected_category = self.library_category_combo.currentText()
+        if selected_category and selected_category != "All categories":
+            rows = [row for row in rows if row[2] == selected_category]
         for type_id, name, category, width, depth, height in rows:
             pixmap = (catalogue_thumbnail(get_catalogue_item(type_id)) if library == FURNITURE
                       else product_thumbnail(get_product(type_id)))
@@ -631,6 +654,7 @@ class MainWindow(QMainWindow):
         self.cabinet_id_label.setObjectName("cabinetIdBadge")
         self.cabinet_type_label = QLabel()
         self.cabinet_category_label = QLabel()
+        self.cabinet_duplicate_button = QPushButton("Duplicate cabinet")
         self.position_x_spin = self._spin(0, 20000)
         self.position_y_spin = self._spin(0, 20000)
         form.addRow("Cabinet ID", self.cabinet_id_label)
@@ -649,6 +673,8 @@ class MainWindow(QMainWindow):
         form.insertRow(7, self.drawer_label, self.drawer_spin)
         form.insertRow(8, self.shelf_label, self.shelf_spin)
         form.insertRow(9, "Material / finish", self.material_combo)
+        form.addRow(self.cabinet_duplicate_button)
+        self.cabinet_duplicate_button.clicked.connect(self.duplicate_selected_object)
         self.placement_warning = QLabel()
         self.placement_warning.setObjectName("placementWarning")
         self.placement_warning.setWordWrap(True)
@@ -673,6 +699,7 @@ class MainWindow(QMainWindow):
         self.product_depth_spin = self._spin(20, 3000)
         self.product_height_spin = self._spin(10, 3000)
         self.product_remove_button = QPushButton("Remove selected product")
+        self.product_duplicate_button = QPushButton("Duplicate product")
         product_form.addRow("Product ID", self.product_id_label)
         product_form.addRow("Model", self.product_name_label)
         product_form.addRow(self.product_rule_label)
@@ -682,18 +709,24 @@ class MainWindow(QMainWindow):
             product_form.addRow(label, control)
             control.valueChanged.connect(self._product_properties_changed)
         product_form.addRow(self.product_remove_button)
+        product_form.addRow(self.product_duplicate_button)
         self.product_treatment_group = QGroupBox("Product treatment")
         treatment_form = QFormLayout(self.product_treatment_group)
         self.product_commercial_combo = QComboBox()
         self.product_commercial_combo.addItems(["Unpriced demo", "Client supplied"])
         self.product_manufacturing_combo = QComboBox()
         self.product_manufacturing_combo.addItems(["Review required", "Supplier supplied"])
+        self.product_appearance_combo = QComboBox()
+        self.product_appearance_combo.addItems(["Catalogue", *APPEARANCE_COLOURS])
         treatment_form.addRow("Commercial", self.product_commercial_combo)
         treatment_form.addRow("Manufacturing", self.product_manufacturing_combo)
+        treatment_form.addRow("Appearance", self.product_appearance_combo)
         self.product_commercial_combo.currentTextChanged.connect(self._product_properties_changed)
         self.product_manufacturing_combo.currentTextChanged.connect(self._product_properties_changed)
+        self.product_appearance_combo.currentTextChanged.connect(self._product_properties_changed)
         product_form.addRow(self.product_treatment_group)
         self.product_remove_button.clicked.connect(self.remove_selected_product)
+        self.product_duplicate_button.clicked.connect(self.duplicate_selected_object)
         self.product_group.hide()
         layout.addWidget(self.product_group)
         layout.addWidget(self.placement_warning)
@@ -782,10 +815,7 @@ class MainWindow(QMainWindow):
                 (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) if is_macos() else (Qt.Key.Key_Delete,)
             )
         ):
-            if self.selected_product_id is not None:
-                self.remove_selected_product()
-            else:
-                self.remove_selected_cabinet()
+            self.remove_selected_object()
             event.accept()
             return True
         return super().eventFilter(watched, event)
@@ -1245,8 +1275,10 @@ class MainWindow(QMainWindow):
         self._refresh_tree()
         self._refresh_bom()
         cabinet_selected = self.project.selected_cabinet is not None and self.project.selected_opening is None
-        self.remove_cabinet_action.setEnabled(cabinet_selected)
-        self.delete_cabinet_action.setEnabled(cabinet_selected)
+        object_selected = cabinet_selected or self.selected_product_id is not None
+        self.remove_cabinet_action.setEnabled(object_selected)
+        self.delete_cabinet_action.setEnabled(object_selected)
+        self.duplicate_action.setEnabled(object_selected)
         self.add_cabinet_action.setEnabled(len(self.project.cabinets) < MAX_CABINETS)
         self.catalogue_add_button.setEnabled(len(self.project.cabinets) < MAX_CABINETS)
         self.remove_opening_action.setEnabled(self.project.selected_opening is not None)
@@ -1335,13 +1367,14 @@ class MainWindow(QMainWindow):
             self.select_product(item_id.split(":", 1)[1])
         elif isinstance(item_id, str) and item_id.startswith("hardware:"):
             assignment = next(item for item in self.project.hardware_assignments if item.assignment_id == item_id.split(":", 1)[1])
-            self.selected_hardware_assignment_id = assignment.assignment_id
             self.select_cabinet(assignment.cabinet_id)
+            self.selected_hardware_assignment_id = assignment.assignment_id
         elif item_id:
             self.select_cabinet(item_id)
 
     def select_cabinet(self, cabinet_id: str) -> None:
         self.selected_product_id = None
+        self.selected_hardware_assignment_id = None
         try:
             self.project.select_cabinet(cabinet_id)
             self.project.select_opening(None)
@@ -1373,6 +1406,7 @@ class MainWindow(QMainWindow):
         if get_product(product.type_id).library == APPLIANCES:
             self.product_commercial_combo.setCurrentText(product.commercial_treatment)
             self.product_manufacturing_combo.setCurrentText(product.manufacturing_treatment)
+            self.product_appearance_combo.setCurrentText(product.appearance)
         for control, value in ((self.product_x_spin, product.position_x), (self.product_y_spin, product.position_y),
                                (self.product_z_spin, product.elevation_z), (self.product_width_spin, product.width),
                                (self.product_depth_spin, product.depth), (self.product_height_spin, product.height)):
@@ -1383,6 +1417,7 @@ class MainWindow(QMainWindow):
         if not any(item.item_id == item_id for item in self.project.placed_products):
             return
         self.selected_product_id = item_id
+        self.selected_hardware_assignment_id = None
         self.project.select_opening(None)
         self._load_opening_controls()
         self.refresh_visuals()
@@ -1421,33 +1456,48 @@ class MainWindow(QMainWindow):
         product = PlacedProduct(self.project.next_product_id(definition.library), type_id, x, y,
                                 definition.elevation_z, definition.width, definition.depth, definition.height)
         try:
-            self.project.add_product(product)
+            self.project.validate_product_placement(product)
         except ValueError as error:
             self._show_placement_error(error)
             return
-        self.selected_product_id = product.item_id
-        self.project.select_opening(None)
         self.plan_view.cancel_interaction(emit_signal=False)
+        self.undo_stack.push(ProductChangeCommand(product.item_id, None, product,
+                                                  self._apply_product_state, f"Place {product.item_id}"))
+        self.statusBar().showMessage(f"Placed {product.item_id}: {definition.name}")
+
+    def _apply_product_state(self, item_id: str, state: PlacedProduct | None) -> None:
+        existing = next((item for item in self.project.placed_products if item.item_id == item_id), None)
+        if state is None:
+            if existing is not None:
+                self.project.remove_product(item_id)
+            self.selected_product_id = None
+        elif existing is None:
+            self.project.add_product(state)
+            self.selected_product_id = item_id
+        else:
+            self.project.validate_product_placement(state)
+            existing.__dict__.update(state.__dict__)
+            self.selected_product_id = item_id
+        self.project.select_opening(None)
         self._set_dirty(True)
         self._load_opening_controls()
-        self.refresh_visuals(reset_camera=False)
-        self.statusBar().showMessage(f"Placed {product.item_id}: {definition.name}")
+        self.refresh_all(reset_camera=False)
 
     def move_product(self, item_id: str, x: int, y: int) -> None:
         product = next((item for item in self.project.placed_products if item.item_id == item_id), None)
         if product is None:
             return
+        if (product.position_x, product.position_y) == (x, y):
+            return
         candidate = deepcopy(product)
         candidate.position_x, candidate.position_y = x, y
         try:
-            candidate.validate(self.project.room)
+            self.project.validate_product_placement(candidate)
         except ValueError as error:
             self._show_placement_error(error)
             return
-        product.position_x, product.position_y = x, y
-        self.selected_product_id = item_id
-        self._set_dirty(True)
-        self.refresh_visuals()
+        self.undo_stack.push(ProductChangeCommand(item_id, product, candidate,
+                                                  self._apply_product_state, f"Move {item_id}"))
 
     def _product_properties_changed(self, *_args) -> None:
         if getattr(self, "_updating_product_controls", False) or self.selected_product_id is None:
@@ -1463,25 +1513,79 @@ class MainWindow(QMainWindow):
         if get_product(candidate.type_id).library == APPLIANCES:
             candidate.commercial_treatment = self.product_commercial_combo.currentText()
             candidate.manufacturing_treatment = self.product_manufacturing_combo.currentText()
+            candidate.appearance = self.product_appearance_combo.currentText()
         try:
-            candidate.validate(self.project.room)
+            self.project.validate_product_placement(candidate)
         except ValueError as error:
             self._show_placement_error(error)
             self._load_product_controls()
             return
-        product.__dict__.update(candidate.__dict__)
-        self._set_dirty(True)
-        self.placement_warning.hide()
-        self.refresh_visuals()
+        if candidate != product:
+            self.undo_stack.push(ProductChangeCommand(product.item_id, product, candidate,
+                                                      self._apply_product_state, f"Edit {product.item_id}"))
 
     def remove_selected_product(self) -> None:
         if self.selected_product_id is None:
             return
-        self.project.remove_product(self.selected_product_id)
-        self.selected_product_id = None
-        self._set_dirty(True)
-        self._load_selected_controls()
-        self.refresh_visuals()
+        product = next(item for item in self.project.placed_products if item.item_id == self.selected_product_id)
+        self.undo_stack.push(ProductChangeCommand(product.item_id, product, None,
+                                                  self._apply_product_state, f"Remove {product.item_id}"))
+
+    def remove_selected_object(self) -> None:
+        if self.selected_product_id is not None:
+            self.remove_selected_product()
+        elif self.selected_hardware_assignment_id is not None:
+            self.remove_selected_hardware_assignment()
+        else:
+            self.remove_selected_cabinet()
+
+    def _duplicate_position(self, candidate, source, validate) -> tuple[int, int]:
+        """Find a nearby valid 2D position, then scan the rectangular room."""
+        w, d = candidate.width, candidate.depth
+        preferred = (
+            (source.position_x + source.width + 40, source.position_y),
+            (source.position_x - w - 40, source.position_y),
+            (source.position_x, source.position_y - d - 40),
+            (source.position_x, source.position_y + source.depth + 40),
+        )
+        scan = ((x, y) for y in range(0, max(0, self.project.room.depth - d) + 1, 100)
+                for x in range(0, max(0, self.project.room.width - w) + 1, 100))
+        for x, y in chain(preferred, scan):
+            candidate.position_x, candidate.position_y = x, y
+            try:
+                validate(candidate)
+                return x, y
+            except ValueError:
+                continue
+        raise ValueError(f"No valid room position is available for a duplicate of {source.item_id if hasattr(source, 'item_id') else source.cabinet_id}.")
+
+    def duplicate_selected_object(self) -> None:
+        try:
+            if self.selected_product_id is not None:
+                source = next(item for item in self.project.placed_products if item.item_id == self.selected_product_id)
+                candidate = deepcopy(source)
+                candidate.item_id = self.project.next_product_id(get_product(source.type_id).library)
+                self._duplicate_position(candidate, source, self.project.validate_product_placement)
+                self.undo_stack.push(ProductChangeCommand(candidate.item_id, None, candidate,
+                                                          self._apply_product_state, f"Duplicate {source.item_id}"))
+            elif self.selected_hardware_assignment_id is not None:
+                source = next(item for item in self.project.hardware_assignments
+                              if item.assignment_id == self.selected_hardware_assignment_id)
+                candidate = deepcopy(source)
+                candidate.assignment_id = self.project.next_assignment_id()
+                self.undo_stack.push(HardwareAssignmentCommand(candidate, self._apply_hardware_assignment))
+            else:
+                source = self.project.selected_cabinet
+                if source is None or self.project.selected_opening is not None:
+                    raise ValueError("Select a cabinet or library product to duplicate.")
+                if len(self.project.cabinets) >= MAX_CABINETS:
+                    raise ValueError(f"This demo supports a maximum of {MAX_CABINETS} cabinets.")
+                candidate = deepcopy(source)
+                candidate.cabinet_id = self.project.next_cabinet_id()
+                self._duplicate_position(candidate, source, self.project.validate_cabinet_placement)
+                self.undo_stack.push(AddCabinetCommand(candidate, self._apply_cabinet_addition))
+        except ValueError as error:
+            self._show_placement_error(error)
 
     def remove_selected_hardware_assignment(self) -> None:
         assignment_id = self.selected_hardware_assignment_id
@@ -1510,6 +1614,9 @@ class MainWindow(QMainWindow):
         return type_id
 
     def begin_catalogue_placement(self) -> None:
+        if self.explorer_tabs.currentWidget() is self.library_page:
+            self.begin_library_placement()
+            return
         try:
             if len(self.project.cabinets) >= MAX_CABINETS:
                 raise ValueError(f"This demo supports a maximum of {MAX_CABINETS} cabinets.")

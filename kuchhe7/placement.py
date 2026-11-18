@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .models import Cabinet, Room
+    from .models import Cabinet, PlacedProduct, Room
 
 
 @dataclass(frozen=True)
@@ -27,7 +27,8 @@ def volumes_intersect(first: Cabinet, second: Cabinet) -> bool:
     )
 
 
-def placement_error(room: Room, cabinets: list[Cabinet], candidate: Cabinet) -> str | None:
+def placement_error(room: Room, cabinets: list[Cabinet], candidate: Cabinet,
+                    products: list[PlacedProduct] | None = None) -> str | None:
     from .openings import opening_furniture_conflict
 
     if candidate.position_x < 0 or candidate.position_y < 0:
@@ -37,10 +38,34 @@ def placement_error(room: Room, cabinets: list[Cabinet], candidate: Cabinet) -> 
     for other in cabinets:
         if other.cabinet_id != candidate.cabinet_id and volumes_intersect(candidate, other):
             return f"{candidate.cabinet_id} overlaps {other.cabinet_id} in 3D. Adjust its position."
+    for product in products or []:
+        if volumes_intersect(candidate, product):
+            return f"{candidate.cabinet_id} overlaps product {product.item_id} in 3D."
     for opening in room.openings:
         conflict = opening_furniture_conflict(room, opening, candidate)
         if conflict:
             return conflict
+    return None
+
+
+def product_placement_error(
+    room: Room, cabinets: list[Cabinet], products: list[PlacedProduct], candidate: PlacedProduct,
+) -> str | None:
+    """Check room and 3D volumes without applying installation standards."""
+    try:
+        candidate.validate(room)
+    except ValueError as error:
+        return str(error)
+    for cabinet in cabinets:
+        if volumes_intersect(candidate, cabinet):
+            return f"{candidate.item_id} overlaps cabinet {cabinet.cabinet_id} in 3D."
+    for other in products:
+        if other.item_id == candidate.item_id or not volumes_intersect(candidate, other):
+            continue
+        # Sample tap and sink are intentionally allowed to share space.
+        if {candidate.type_id, other.type_id} == {"tap_arc", "sink_single"}:
+            continue
+        return f"{candidate.item_id} overlaps product {other.item_id} in 3D."
     return None
 
 

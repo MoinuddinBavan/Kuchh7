@@ -6,8 +6,8 @@ from typing import Any
 
 from .catalogue import FINISHES, LEGACY_FINISH_ALIASES, get_catalogue_item, normalized_finish
 from .openings import DOOR_SWINGS, OPENING_KINDS, WALL_IDS, opening_error, opening_furniture_conflict, wall_length
-from .placement import placement_error, volumes_intersect
-from .product_libraries import APPLIANCES, HARDWARE, PROPS, get_product
+from .placement import placement_error, product_placement_error, volumes_intersect
+from .product_libraries import APPEARANCE_COLOURS, APPLIANCES, HARDWARE, PROPS, get_product
 
 
 MATERIALS = FINISHES
@@ -158,6 +158,7 @@ class PlacedProduct:
     height: int
     commercial_treatment: str | None = None
     manufacturing_treatment: str | None = None
+    appearance: str = "Catalogue"
 
     def __post_init__(self) -> None:
         visual_only = get_product(self.type_id).library == PROPS
@@ -178,6 +179,10 @@ class PlacedProduct:
             or self.manufacturing_treatment not in ("Review required", "Supplier supplied")
         ):
             raise ValueError("Unsupported appliance treatment; no prices or manufacturing rules are defined.")
+        if self.appearance != "Catalogue" and (
+            definition.library == PROPS or self.appearance not in APPEARANCE_COLOURS
+        ):
+            raise ValueError("Unsupported product appearance.")
         if not self.item_id.strip() or self.width <= 0 or self.depth <= 0 or self.height <= 0:
             raise ValueError("Placed product requires an ID and positive dimensions.")
         if (self.position_x < 0 or self.position_y < 0 or self.elevation_z < 0
@@ -344,8 +349,14 @@ class Project:
     def add_product(self, item: PlacedProduct) -> None:
         if any(existing.item_id == item.item_id for existing in self.placed_products):
             raise ValueError(f"Placed product ID {item.item_id} is already in use.")
-        item.validate(self.room)
+        self.validate_product_placement(item)
         self.placed_products.append(item)
+
+    def validate_product_placement(self, item: PlacedProduct) -> None:
+        """Basic 3D volume check; a tap may share a sink's sample volume."""
+        error = product_placement_error(self.room, self.cabinets, self.placed_products, item)
+        if error:
+            raise ValueError(error)
 
     def remove_product(self, item_id: str) -> PlacedProduct:
         for index, item in enumerate(self.placed_products):
@@ -379,7 +390,7 @@ class Project:
 
     def validate_cabinet_placement(self, cabinet: Cabinet) -> None:
         cabinet.validate()
-        error = placement_error(self.room, self.cabinets, cabinet)
+        error = placement_error(self.room, self.cabinets, cabinet, self.placed_products)
         if error:
             raise ValueError(error)
 
@@ -429,7 +440,7 @@ class Project:
         if len(product_ids) != len(set(product_ids)):
             raise ValueError("Placed product IDs must be unique.")
         for item in self.placed_products:
-            item.validate(self.room)
+            self.validate_product_placement(item)
         assignment_ids = [item.assignment_id for item in self.hardware_assignments]
         if len(assignment_ids) != len(set(assignment_ids)):
             raise ValueError("Hardware assignment IDs must be unique.")

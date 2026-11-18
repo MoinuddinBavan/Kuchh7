@@ -5,7 +5,7 @@ from typing import Callable
 
 from PySide6.QtGui import QUndoCommand
 
-from ..models import Cabinet, HardwareAssignment, Opening
+from ..models import Cabinet, HardwareAssignment, Opening, PlacedProduct
 
 
 class MoveCabinetCommand(QUndoCommand):
@@ -89,6 +89,24 @@ class HardwareAssignmentCommand(QUndoCommand):
 
     def redo(self) -> None:
         self._apply_change(deepcopy(self.assignment), self.add)
+
+
+class ProductChangeCommand(QUndoCommand):
+    """Undoable add, remove, move, duplicate, or dimension edit of a visual product."""
+
+    def __init__(self, item_id: str, before: PlacedProduct | None,
+                 after: PlacedProduct | None, apply_state, label: str) -> None:
+        super().__init__(label)
+        self.item_id = item_id
+        self.before = deepcopy(before)
+        self.after = deepcopy(after)
+        self._apply_state = apply_state
+
+    def undo(self) -> None:
+        self._apply_state(self.item_id, deepcopy(self.before))
+
+    def redo(self) -> None:
+        self._apply_state(self.item_id, deepcopy(self.after))
 
 
 class OpeningChangeCommand(QUndoCommand):

@@ -11,9 +11,9 @@ from PySide6.QtWidgets import QGraphicsItem, QGraphicsScene, QGraphicsView, QVBo
 
 from ..catalogue import create_catalogue_cabinet, get_catalogue_item, normalized_finish
 from ..models import Cabinet, Opening, PlacedProduct, Room
-from ..product_libraries import get_product
+from ..product_libraries import get_product, product_colour
 from ..openings import opening_error, opening_furniture_conflict, wall_length
-from ..placement import placement_error, snap_position
+from ..placement import placement_error, product_placement_error, snap_position
 from ..presentation import connected_base_runs
 
 
@@ -60,6 +60,7 @@ class RoomPlanView(QGraphicsView):
     productSelected = Signal(str)
     productPlacementRequested = Signal(str, int, int)
     productMoveRequested = Signal(str, int, int)
+    placementRejected = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -104,6 +105,7 @@ class RoomPlanView(QGraphicsView):
         self._guide_items: list[QGraphicsItem] = []
         self._preview_position: tuple[int, int] | None = None
         self._preview_valid = False
+        self._product_preview_error: str | None = None
         self._snap_enabled = True
         self._grid_snap_enabled = True
         self.redraw(self._room, self._cabinets, self._selected_cabinet_id)
@@ -269,7 +271,7 @@ class RoomPlanView(QGraphicsView):
             definition = get_product(product.type_id)
             selected = product.item_id == selected_product_id
             x, y = ox + product.position_x * scale, oy + product.position_y * scale
-            colour = QColor(definition.colour)
+            colour = QColor(product_colour(product.type_id, product.appearance))
             colour.setAlpha(185 if selected else 135)
             pen = QPen(QColor("#147D83" if selected else "#6B7880"), 2.6 if selected else 1.4)
             if product.elevation_z:
@@ -484,6 +486,7 @@ class RoomPlanView(QGraphicsView):
         self._guide_items.clear()
         self._preview_position = None
         self._preview_valid = False
+        self._product_preview_error = None
 
     def _update_placement_preview(self, candidate: Cabinet) -> bool:
         result = snap_position(
@@ -495,7 +498,7 @@ class RoomPlanView(QGraphicsView):
             grid_enabled=self._grid_snap_enabled,
         )
         candidate.position_x, candidate.position_y = result.x, result.y
-        error = placement_error(self._room, self._cabinets, candidate)
+        error = placement_error(self._room, self._cabinets, candidate, self._products)
         self._clear_preview()
         valid = error is None
         colour = QColor("#39A58A" if valid else "#C95145")
@@ -541,8 +544,14 @@ class RoomPlanView(QGraphicsView):
             depth = product.depth if product else definition.depth
             x = round(model_point.x() - (self._drag_offset.x() if product else width / 2))
             y = round(model_point.y() - (self._drag_offset.y() if product else depth / 2))
+            candidate = deepcopy(product) if product else PlacedProduct(
+                "PREVIEW", definition.type_id, x, y, definition.elevation_z,
+                width, depth, definition.height,
+            )
+            candidate.position_x, candidate.position_y = x, y
+            error = product_placement_error(self._room, self._cabinets, self._products, candidate)
             self._clear_preview()
-            valid = x >= 0 and y >= 0 and x + width <= self._room.width and y + depth <= self._room.depth
+            valid = error is None
             colour = QColor("#39A58A" if valid else "#C95145")
             colour.setAlpha(95)
             self._preview_item = self.scene().addRect(
@@ -552,6 +561,12 @@ class RoomPlanView(QGraphicsView):
             )
             self._preview_item.setZValue(100)
             self._preview_position, self._preview_valid = (x, y), valid
+            self._product_preview_error = error
+            if error:
+                self._preview_label = self.scene().addText(error, QFont("Segoe UI", 8, QFont.Weight.DemiBold))
+                self._preview_label.setDefaultTextColor(QColor("#8E2822"))
+                self._preview_label.setPos(self._ox + x * self._scale + 4, self._oy + y * self._scale - 24)
+                self._preview_label.setZValue(101)
             return
         if self._pending_type_id:
             candidate = create_catalogue_cabinet(self._pending_type_id, "PREVIEW")
@@ -597,6 +612,8 @@ class RoomPlanView(QGraphicsView):
             self._preview_from_cursor(model_point)
             if self._preview_valid and self._preview_position:
                 self.productPlacementRequested.emit(self._pending_product_type_id, *self._preview_position)
+            elif self._product_preview_error:
+                self.placementRejected.emit(self._product_preview_error)
             event.accept()
             return
         item = self.itemAt(event.position().toPoint())
@@ -881,27 +898,56 @@ class Cabinet3DView(QWidget):
         origin_y = min((item.position_y for item in self._cabinets), default=0)
         x, y, z = product.position_x - origin_x, product.position_y - origin_y, product.elevation_z
         w, d, h = product.width, product.depth, product.height
+        colour = product_colour(product.type_id, product.appearance)
         name = f"product-{product.item_id}"
         if product.item_id == self._selected_product_id:
             outline = self._box(x - 5, x + w + 5, y - 5, y + d + 5, z - 5, z + h + 5)
             actor = self.plotter.add_mesh(outline, name=f"{name}-selection", style="wireframe",
                                           color="#147D83", opacity=0.60, line_width=2, pickable=False)
             actor.SetUseBounds(False)
-        if definition.shape in ("plant", "vase", "jar", "light", "tap"):
-            radius = min(w, d) * (0.30 if definition.shape == "tap" else 0.43)
-            cylinder = pv.Cylinder(center=(x + w / 2, y + d / 2, z + h / 2), radius=radius, height=h)
-            self.plotter.add_mesh(cylinder, name=name, color=definition.colour, ambient=0.4, diffuse=0.6)
+        if definition.shape == "sink":
+            wall = max(3.0, min(w, d) * 0.055)
+            bottom_height = max(2.0, h * 0.12)
+            parts = (
+                (name, self._box(x, x + w, y, y + d, z, z + bottom_height), "#66767B"),
+                (f"{name}-left-rim", self._box(x, x + wall, y, y + d, z + bottom_height, z + h), colour),
+                (f"{name}-right-rim", self._box(x + w - wall, x + w, y, y + d, z + bottom_height, z + h), colour),
+                (f"{name}-front-rim", self._box(x + wall, x + w - wall, y, y + wall,
+                                                 z + bottom_height, z + h), colour),
+                (f"{name}-back-rim", self._box(x + wall, x + w - wall, y + d - wall, y + d,
+                                                z + bottom_height, z + h), colour),
+            )
+            for actor_name, mesh, part_colour in parts:
+                self.plotter.add_mesh(mesh, name=actor_name, color=part_colour,
+                                      show_edges=False, ambient=0.45, diffuse=0.55, specular=0.3)
+            return
+        if definition.shape == "tap":
+            radius = max(3.0, min(w, d) * 0.09)
+            base = pv.Cylinder(center=(x + w / 2, y + d * 0.25, z + radius),
+                               radius=radius * 2, height=radius * 2)
+            arc = pv.Spline([
+                (x + w / 2, y + d * 0.25, z + radius),
+                (x + w / 2, y + d * 0.25, z + h * 0.78),
+                (x + w / 2, y + d * 0.42, z + h),
+                (x + w / 2, y + d * 0.72, z + h * 0.84),
+                (x + w / 2, y + d * 0.76, z + h * 0.62),
+            ], n_points=32).tube(radius=radius)
+            self.plotter.add_mesh(base, name=name, color=colour, specular=0.4)
+            self.plotter.add_mesh(arc, name=f"{name}-spout", color=colour, specular=0.45)
+            return
+        if definition.shape in ("plant", "vase", "jar", "light"):
+            radius = min(w, d) * 0.43
+            body_height = h * 0.43 if definition.shape == "plant" else h
+            cylinder = pv.Cylinder(center=(x + w / 2, y + d / 2, z + body_height / 2),
+                                   radius=radius, height=body_height)
+            self.plotter.add_mesh(cylinder, name=name, color=colour, ambient=0.4, diffuse=0.6)
             if definition.shape == "plant":
                 leaves = pv.Sphere(radius=min(w, d) * 0.46,
                                    center=(x + w / 2, y + d / 2, z + h * 0.82))
                 self.plotter.add_mesh(leaves, name=f"{name}-leaves", color="#52765A")
-            if definition.shape == "tap":
-                spout = pv.Cylinder(center=(x + w / 2, y + d * 0.75, z + h * 0.9),
-                                     direction=(0, 1, 0), radius=10, height=d * 0.5)
-                self.plotter.add_mesh(spout, name=f"{name}-spout", color="#C6CFD0")
             return
         body = self._box(x, x + w, y, y + d, z, z + h)
-        self.plotter.add_mesh(body, name=name, color=definition.colour, show_edges=True,
+        self.plotter.add_mesh(body, name=name, color=colour, show_edges=True,
                               edge_color="#68747A", ambient=0.38, diffuse=0.62, specular=0.14)
         if definition.shape in ("oven", "appliance", "fridge"):
             front = self._box(x + w * 0.08, x + w * 0.92, y - 3, y + 3,
@@ -916,12 +962,6 @@ class Cabinet3DView(QWidget):
                 zone = pv.Cylinder(center=(x + w * ix, y + d * iy, z + h + 2),
                                    radius=min(w, d) * 0.12, height=4)
                 self.plotter.add_mesh(zone, name=f"{name}-zone-{index}", color="#A8B1B2")
-        elif definition.shape == "sink":
-            rim = self._box(x + 12, x + w - 12, y + 12, y + d - 12, z + h - 12, z + h + 8)
-            basin = self._box(x + 35, x + w - 35, y + 35, y + d - 35,
-                              z + h - min(95, h * 0.8), z + h - 15)
-            self.plotter.add_mesh(rim, name=f"{name}-rim", color="#D3DADB")
-            self.plotter.add_mesh(basin, name=f"{name}-basin", color="#65747A")
 
     def _add_environment_mesh(self, mesh, *, name: str, colour: str, wall: bool = False, **kwargs):
         actor = self.plotter.add_mesh(
