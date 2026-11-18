@@ -50,6 +50,7 @@ from ..persistence import load_project, save_project
 from ..platform_support import is_macos, platform_shortcut
 from .cad_views import Cabinet3DView, RoomPlanView
 from .catalogue_preview import catalogue_thumbnail, product_thumbnail
+from .documents_workspace import DocumentsWorkspace
 from .history import AddCabinetCommand, HardwareAssignmentCommand, MoveCabinetCommand, OpeningChangeCommand, ProductChangeCommand, RemoveCabinetCommand
 from .manufacturing_preview import ManufacturingPreviewWidget
 from .sheet_nesting import SheetNestingWidget
@@ -160,6 +161,7 @@ class MainWindow(QMainWindow):
         self.sheet_nesting_action.setToolTip(
             "Open the BOM-driven demonstration sheet nesting workspace"
         )
+        self.documents_action = QAction("BOM & Quotation", self, triggered=self.show_documents)
         self.front_view_action = QAction("Front", self, triggered=lambda: self.view3d.view_front())
         self.isometric_view_action = QAction("Isometric", self, triggered=lambda: self.view3d.view_isometric())
         self.fit_all_action = QAction("Fit All Cabinets", self, shortcut="F", triggered=lambda: self.view3d.fit_all_cabinets())
@@ -261,6 +263,7 @@ class MainWindow(QMainWindow):
         manufacturing_menu = self.menuBar().addMenu("&Manufacturing")
         manufacturing_menu.addAction(self.manufacturing_preview_action)
         manufacturing_menu.addAction(self.sheet_nesting_action)
+        manufacturing_menu.addAction(self.documents_action)
         manufacturing_menu.addSeparator()
         manufacturing_menu.addActions([self.export_xlsx_action, self.export_dxf_action])
         help_menu = self.menuBar().addMenu("&Help")
@@ -383,12 +386,15 @@ class MainWindow(QMainWindow):
         self.manufacturing_preview.set_cabinet(self.project.selected_cabinet)
         self.sheet_nesting = SheetNestingWidget()
         self.sheet_nesting.set_project(self.project)
+        self.documents_workspace = DocumentsWorkspace(lambda: self._set_dirty(True))
+        self.documents_workspace.set_project(self.project)
         self.workspace_tabs = QTabWidget()
         self.workspace_tabs.setObjectName("workspaceTabs")
         self.workspace_tabs.setDocumentMode(True)
         self.workspace_tabs.addTab(self.workspace_splitter, "Design Studio")
         self.workspace_tabs.addTab(self.manufacturing_preview, "Manufacturing Preview")
         self.workspace_tabs.addTab(self.sheet_nesting, "Sheet Nesting")
+        self.workspace_tabs.addTab(self.documents_workspace, "BOM & Quotation")
         self.workspace_tabs.currentChanged.connect(self._workspace_changed)
         self.setCentralWidget(self.workspace_tabs)
 
@@ -844,10 +850,16 @@ class MainWindow(QMainWindow):
             "Sheet Nesting — deterministic demonstration layout; not approved for factory use"
         )
 
+    def show_documents(self) -> None:
+        self.documents_workspace.set_project(self.project)
+        self.workspace_tabs.setCurrentWidget(self.documents_workspace)
+        self.statusBar().showMessage("Review illustrative BOM, then prepare a quotation with manually entered prices")
+
     def _workspace_changed(self, index: int) -> None:
         engineering_active = index == self.workspace_tabs.indexOf(self.manufacturing_preview)
         nesting_active = index == self.workspace_tabs.indexOf(self.sheet_nesting)
-        auxiliary_active = engineering_active or nesting_active
+        documents_active = index == self.workspace_tabs.indexOf(self.documents_workspace)
+        auxiliary_active = engineering_active or nesting_active or documents_active
         if auxiliary_active and self.maximize_3d_action.isChecked():
             self.maximize_3d_action.setChecked(False)
         self.maximize_3d_action.setEnabled(not auxiliary_active)
@@ -866,11 +878,14 @@ class MainWindow(QMainWindow):
                     self.statusBar().showMessage(
                         f"Engineering feasibility preview for {self.project.selected_cabinet_id} — not approved for production"
                     )
-            else:
+            elif nesting_active:
                 self.sheet_nesting.set_project(self.project)
                 self.statusBar().showMessage(
                     "Demonstration sheet nesting — click Recalculate after project changes"
                 )
+            else:
+                self.documents_workspace.set_project(self.project)
+                self.statusBar().showMessage("BOM and quotation review — illustrative quantities and manual prices")
         else:
             for dock, was_visible in self._engineering_restore_docks.items():
                 dock.setVisible(was_visible)
@@ -1272,6 +1287,8 @@ class MainWindow(QMainWindow):
             self.manufacturing_preview.set_cabinet(self.project.selected_cabinet)
         if hasattr(self, "sheet_nesting"):
             self.sheet_nesting.set_project(self.project)
+        if hasattr(self, "documents_workspace"):
+            self.documents_workspace.set_project(self.project)
         self._refresh_tree()
         self._refresh_bom()
         cabinet_selected = self.project.selected_cabinet is not None and self.project.selected_opening is None

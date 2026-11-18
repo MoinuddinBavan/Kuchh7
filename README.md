@@ -1,5 +1,33 @@
 # kuchhe7 Client Approval Demo v1.0.1
 
+## Stage 3 BOM and customer quotation
+
+Open a project and choose **Manufacturing > BOM & Quotation**. The **BOM Review**
+tab shows the existing cabinet component calculations and offers Excel and PDF
+exports. Dimensions and quantities remain illustrative and are not factory
+approved. The original BOM XLSX and cabinet-elevation DXF actions remain
+available unchanged.
+
+In **Customer Quotation**, enter customer, quotation number, ISO date, manually
+configured unit selling prices, discount and tax percentages. The tax percentage
+is applied after the discount. Furniture appears as sellable lines; appliances,
+sinks and taps enter totals only when explicitly marked **Supplied / billable**.
+Decorative props and hardware assignments are excluded from quotation lines.
+Missing prices produce an **INCOMPLETE** warning, and totals then represent only
+priced lines. No currency, rates, hardware costs or commercial terms are
+assumed. Quotation data is saved in project JSON; older project files load with
+an empty quotation.
+
+The BOM Excel exporter accepts an optional client workbook and configurable
+sheet/header row through `ExcelLayout` in `kuchhe7/document_exports.py`. The UI
+has a **Choose Excel template** button. A client-supplied sample is needed to
+map its exact layout and styling. To capture the document screens and generate
+clearly labeled demonstration outputs on Windows:
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.capture_stage3_documents
+```
+
 ## Stage 2 design workflow
 
 The **Libraries** tab is the single visible product browser. It filters by

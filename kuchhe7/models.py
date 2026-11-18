@@ -8,6 +8,7 @@ from .catalogue import FINISHES, LEGACY_FINISH_ALIASES, get_catalogue_item, norm
 from .openings import DOOR_SWINGS, OPENING_KINDS, WALL_IDS, opening_error, opening_furniture_conflict, wall_length
 from .placement import placement_error, product_placement_error, volumes_intersect
 from .product_libraries import APPEARANCE_COLOURS, APPLIANCES, HARDWARE, PROPS, get_product
+from .quotation import QuotationData
 
 
 MATERIALS = FINISHES
@@ -224,8 +225,11 @@ class Project:
     selected_opening_id: str | None = None
     placed_products: list[PlacedProduct] = field(default_factory=list)
     hardware_assignments: list[HardwareAssignment] = field(default_factory=list)
+    quotation: QuotationData = field(default_factory=QuotationData)
 
     def __post_init__(self) -> None:
+        if not isinstance(self.quotation, QuotationData):
+            self.quotation = QuotationData(**self.quotation)
         self.placed_products = [item if isinstance(item, PlacedProduct) else PlacedProduct(**item) for item in self.placed_products]
         self.hardware_assignments = [item if isinstance(item, HardwareAssignment) else HardwareAssignment(**item) for item in self.hardware_assignments]
         if not self.cabinets and self.cabinet is not None:
@@ -254,6 +258,7 @@ class Project:
 
     def next_cabinet_id(self) -> str:
         used = {cabinet.cabinet_id for cabinet in self.cabinets}
+        used.update(item_id for item_id in self.quotation.unit_prices if item_id.startswith("C"))
         for number in range(1, 100):
             candidate = f"C{number}"
             if candidate not in used:
@@ -344,6 +349,8 @@ class Project:
     def next_product_id(self, library: str) -> str:
         prefix = "P" if library == PROPS else "A"
         used = {item.item_id for item in self.placed_products}
+        used.update(self.quotation.unit_prices)
+        used.update(self.quotation.billable_product_ids)
         return next(f"{prefix}{number}" for number in range(1, 1000) if f"{prefix}{number}" not in used)
 
     def add_product(self, item: PlacedProduct) -> None:
@@ -446,6 +453,7 @@ class Project:
             raise ValueError("Hardware assignment IDs must be unique.")
         for assignment in self.hardware_assignments:
             assignment.validate(self.cabinets)
+        self.quotation.validate(self)
         if self.cabinets:
             selected_id = self.selected_cabinet_id
             if not any(item.cabinet_id == selected_id for item in self.cabinets):
@@ -469,6 +477,7 @@ class Project:
             "selected_opening_id": self.selected_opening_id,
             "placed_products": [asdict(item) for item in self.placed_products],
             "hardware_assignments": [asdict(item) for item in self.hardware_assignments],
+            "quotation": asdict(self.quotation),
         }
 
     @classmethod
@@ -502,6 +511,7 @@ class Project:
             selected_opening_id=data.get("selected_opening_id"),
             placed_products=[PlacedProduct(**item) for item in data.get("placed_products", [])],
             hardware_assignments=[HardwareAssignment(**item) for item in data.get("hardware_assignments", [])],
+            quotation=QuotationData(**data.get("quotation", {})),
         )
         project.validate()
         return project
