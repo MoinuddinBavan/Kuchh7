@@ -81,6 +81,13 @@ class NewProjectDialog(QDialog):
 
 
 class MainWindow(QMainWindow):
+    def closeEvent(self, event) -> None:  # noqa: N802
+        if hasattr(self, "realistic_render_workspace") and self.realistic_render_workspace.render_in_progress:
+            event.ignore()
+            self.statusBar().showMessage("Rendering request is still running. Close the application after it finishes.")
+            return
+        super().closeEvent(event)
+
     def __init__(self, *, start_empty: bool = True) -> None:
         super().__init__()
         self.project = Project.empty() if start_empty else Project()
@@ -1013,8 +1020,10 @@ class MainWindow(QMainWindow):
             elif documents_active:
                 self.documents_workspace.set_project(self.project)
                 self.statusBar().showMessage("BOM and quotation review — illustrative quantities and manual prices")
-            else:
+            elif design_assistant_active:
                 self.statusBar().showMessage("Design Assistant — local proposal preview; project unchanged")
+            elif rendering_active:
+                self.statusBar().showMessage("Realistic Rendering — 3D capture is separate from project data")
         else:
             for dock, was_visible in self._engineering_restore_docks.items():
                 dock.setVisible(was_visible)

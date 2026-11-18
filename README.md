@@ -379,6 +379,13 @@ rules rather than approved building-code or factory-clearance calculations.
 
 ### Stage 5B presentation images
 
+Stage 5C adds an optional OpenAI Images API **image edit** adapter to the
+existing rendering workspace. It uses the actual 3D PNG as input, requires
+confirmation before upload and keeps the result separate from project and
+manufacturing data. Configure the model, quality, key and image size using the
+environment variables in `docs/STAGE5C_OPENAI_RENDERING.md`. Without a key,
+the local 3D capture and PNG save remain available; no AI render is implied.
+
 Open **View → Realistic Rendering** to capture the existing PyVista kitchen at
 1600 × 900 pixels. Choose Current, Front, Isometric or Presentation camera,
 compare the source with any optional generated image, and save a PNG. The

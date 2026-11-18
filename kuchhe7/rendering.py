@@ -9,9 +9,11 @@ import base64
 import io
 import json
 import os
+import socket
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
@@ -25,6 +27,12 @@ STYLES = (
     "Luxury kitchen presentation",
 )
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
+OPENAI_IMAGE_EDIT_URL = "https://api.openai.com/v1/images/edits"
+OPENAI_IMAGE_MODELS = ("gpt-image-2.5-sunburst", "gpt-image-2.5-flare", "gpt-image-2.6-sunburst", "gpt-image-2.6-flare")
+OPENAI_IMAGE_QUALITIES = ("low", "medium", "high")
+OPENAI_IMAGE_SIZES = ("1024x1024", "1536x1024", "1024x1536")
+MAX_OPENAI_DATA_URL_LENGTH = 20_971_520
+MAX_PROVIDER_RESPONSE_BYTES = 30 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -135,8 +143,109 @@ class HttpJsonImageProvider:
             raise RuntimeError("Rendering service failed or returned an invalid PNG image.") from error
 
 
+def realistic_edit_prompt(request: RenderRequest) -> str:
+    """Presentation guidance; the image remains the sole design reference."""
+    request.validate()
+    prompt = (
+        "Edit the supplied 3D kitchen design image into a photorealistic client presentation. "
+        "Use the input image as the composition and layout reference. Keep the same camera viewpoint, "
+        "visible cabinet count and arrangement, approximate cabinet proportions, wall openings, "
+        "appliances, sink, countertop, decorative props and selected material colours. "
+        "Do not add, remove, move or resize furniture or change the room layout. "
+        "Improve only realistic material texture, lighting and interior atmosphere. "
+        "Avoid labels, dimension marks and invented products. "
+        f"Presentation style: {request.style}."
+    )
+    if request.instructions:
+        prompt += f" Additional visual instructions: {request.instructions.strip()}"
+    return prompt
+
+
+class OpenAIImageEditProvider:
+    """OpenAI Images API edit adapter using the captured PNG as image input.
+
+    Uses the documented JSON image_url data-URI request and GPT Image base64
+    response. This class does not know about Project, BOM or manufacturing data.
+    """
+
+    def __init__(self, api_key: str, *, model: str = "gpt-image-2.5-sunburst",
+                 quality: str = "medium", size: str = "1536x1024",
+                 timeout_seconds: float = 90) -> None:
+        if not api_key.strip():
+            raise ValueError("OpenAI API key is not configured.")
+        if model not in OPENAI_IMAGE_MODELS:
+            raise ValueError("Unsupported OpenAI image-editing model.")
+        if quality not in OPENAI_IMAGE_QUALITIES:
+            raise ValueError("Unsupported OpenAI image quality.")
+        if size not in OPENAI_IMAGE_SIZES:
+            raise ValueError("Unsupported OpenAI image size.")
+        if timeout_seconds <= 0:
+            raise ValueError("OpenAI timeout must be positive.")
+        self.api_key = api_key.strip()
+        self.model = model
+        self.quality = quality
+        self.size = size
+        self.timeout_seconds = timeout_seconds
+        self.name = f"OpenAI image edit ({model}, {quality})"
+
+    def render(self, request: RenderRequest) -> bytes:
+        request.validate()
+        image_url = "data:image/png;base64," + base64.b64encode(request.source_png).decode("ascii")
+        if len(image_url) > MAX_OPENAI_DATA_URL_LENGTH:
+            raise ValueError("3D capture is too large for the OpenAI image-edit input. Use a smaller capture.")
+        payload = json.dumps({
+            "model": self.model,
+            "images": [{"image_url": image_url}],
+            "prompt": realistic_edit_prompt(request),
+            "quality": self.quality,
+            "size": self.size,
+            "output_format": "png",
+            "n": 1,
+        }).encode("utf-8")
+        http_request = Request(
+            OPENAI_IMAGE_EDIT_URL, data=payload,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"},
+            method="POST",
+        )
+        try:
+            with urlopen(http_request, timeout=self.timeout_seconds) as response:
+                raw = response.read(MAX_PROVIDER_RESPONSE_BYTES + 1)
+            if len(raw) > MAX_PROVIDER_RESPONSE_BYTES:
+                raise ValueError("OpenAI response exceeds the presentation image limit.")
+            result = json.loads(raw)
+            encoded = result["data"][0]["b64_json"]
+            image_data = base64.b64decode(encoded, validate=True)
+            validate_png(image_data)
+            return image_data
+        except HTTPError as error:
+            if error.code in (401, 403):
+                raise RuntimeError("OpenAI authentication or model access failed. Check the configured API key and permissions.") from error
+            if error.code == 429:
+                raise RuntimeError("OpenAI rate or usage limit reached. Retry later or check usage controls.") from error
+            raise RuntimeError(f"OpenAI image edit failed (HTTP {error.code}).") from error
+        except (TimeoutError, socket.timeout) as error:
+            raise RuntimeError("OpenAI image edit timed out. Retry the request.") from error
+        except URLError as error:
+            if isinstance(error.reason, (TimeoutError, socket.timeout)):
+                raise RuntimeError("OpenAI image edit timed out. Retry the request.") from error
+            raise RuntimeError("OpenAI network connection failed. Check connectivity and retry.") from error
+        except (ValueError, KeyError, IndexError, TypeError) as error:
+            raise RuntimeError("OpenAI returned an invalid or oversized PNG image response.") from error
+
+
 def configured_image_provider() -> ImageRenderProvider | None:
+    choice = os.environ.get("KUCHE7_RENDER_PROVIDER", "").strip().lower()
+    if choice not in ("", "openai", "custom"):
+        raise ValueError("KUCHE7_RENDER_PROVIDER must be openai or custom.")
     endpoint = os.environ.get("KUCHE7_RENDER_ENDPOINT", "").strip()
-    if not endpoint:
+    if choice == "custom" or (not choice and endpoint):
+        return HttpJsonImageProvider(endpoint, os.environ.get("KUCHE7_RENDER_API_KEY", "")) if endpoint else None
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not api_key:
         return None
-    return HttpJsonImageProvider(endpoint, os.environ.get("KUCHE7_RENDER_API_KEY", ""))
+    return OpenAIImageEditProvider(
+        api_key,
+        model=os.environ.get("KUCHE7_OPENAI_IMAGE_MODEL", "gpt-image-2.5-sunburst").strip(),
+        quality=os.environ.get("KUCHE7_OPENAI_IMAGE_QUALITY", "medium").strip(),
+        size=os.environ.get("KUCHE7_OPENAI_IMAGE_SIZE", "1536x1024").strip(),
+    )

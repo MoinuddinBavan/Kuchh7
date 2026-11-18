@@ -133,6 +133,8 @@ def test_mocked_image_provider_sends_only_image_style_instructions(monkeypatch):
 
 def test_render_workspace_unavailable_without_provider_and_rotated_3d_actor(monkeypatch):
     monkeypatch.delenv("KUCHE7_RENDER_ENDPOINT", raising=False)
+    monkeypatch.delenv("KUCHE7_RENDER_PROVIDER", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     application = QApplication.instance() or QApplication([])
     window = MainWindow()
     proposal = build_proposal(window.project,

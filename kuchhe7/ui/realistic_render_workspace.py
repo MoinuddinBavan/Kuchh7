@@ -99,17 +99,23 @@ class RealisticRenderWorkspace(QWidget):
         outer.addWidget(comparison, 1)
         self.refresh_provider_status()
 
-    def refresh_provider_status(self) -> None:
+    @property
+    def render_in_progress(self) -> bool:
+        return self._thread is not None
+
+    def refresh_provider_status(self, *, preserve_message: bool = False) -> None:
         try:
             provider = configured_image_provider()
         except ValueError as error:
             provider = None
-            self.status_label.setText(f"Provider configuration invalid: {error}")
+            if not preserve_message:
+                self.status_label.setText(f"Provider configuration invalid: {error}")
         else:
-            self.status_label.setText(
-                "Image-input service configured; external upload requires confirmation."
-                if provider else "No live AI provider configured. 3D capture and PNG saving are available."
-            )
+            if not preserve_message:
+                self.status_label.setText(
+                    f"{provider.name} ready. External image upload requires confirmation and may incur charges."
+                    if provider else "No live AI provider configured. 3D capture and PNG saving are available."
+                )
         self.generate_button.setEnabled(provider is not None and self.source_png is not None and self._thread is None)
 
     def _show_image(self, label: QLabel, data: bytes) -> None:
@@ -175,8 +181,8 @@ class RealisticRenderWorkspace(QWidget):
             return False
         answer = QMessageBox.question(
             self, "Send design image to external provider?",
-            "This sends the current 3D capture and your presentation instructions to the configured image service. "
-            "The image may reveal a client layout. Continue?",
+            f"This sends the current 3D capture and your presentation instructions to {provider.name}. "
+            "The image may reveal a client layout and the request may incur charges. Continue?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -196,7 +202,7 @@ class RealisticRenderWorkspace(QWidget):
         self._thread.finished.connect(self._worker_cleared)
         self.generate_button.setEnabled(False)
         self.capture_button.setEnabled(False)
-        self.status_label.setText("Rendering in progress… You can continue using the application.")
+        self.status_label.setText(f"{provider.name} is rendering… You can continue using the application.")
         self._thread.start()
         return True
 
@@ -221,7 +227,7 @@ class RealisticRenderWorkspace(QWidget):
         self._worker = None
         self._thread = None
         self.capture_button.setEnabled(True)
-        self.refresh_provider_status()
+        self.refresh_provider_status(preserve_message=True)
 
     def save_image(self) -> bool:
         data = self.result_png or self.source_png
