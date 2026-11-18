@@ -4,6 +4,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPen, QPixmap, QPolygonF
 
 from ..catalogue import CatalogueItem
+from ..product_libraries import ProductDefinition
 
 
 PREVIEW_COLOURS = {
@@ -13,6 +14,33 @@ PREVIEW_COLOURS = {
     "Walnut": "#694B39",
     "Graphite": "#43474A",
 }
+
+
+def product_thumbnail(item: ProductDefinition) -> QPixmap:
+    """Compact drawing derived from sample dimensions and product geometry."""
+    pixmap = QPixmap(76, 60)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    width = min(49.0, max(23.0, 42.0 * item.width / max(item.width, item.height)))
+    height = min(42.0, max(21.0, 42.0 * item.height / max(item.width, item.height)))
+    if item.shape in ("hob", "sink", "board"):
+        width, height = 47.0, 25.0
+    x, y = (76 - width) / 2, (60 - height) / 2
+    painter.setPen(QPen(QColor("#57656B"), 1.3))
+    painter.setBrush(QColor(item.colour))
+    if item.shape in ("plant", "vase", "jar", "light", "tap"):
+        painter.drawRoundedRect(QRectF(x, y, width, height), min(12.0, width / 2), 7.0)
+        if item.shape == "plant":
+            painter.setBrush(QColor("#52765A"))
+            painter.drawEllipse(QRectF(x - 4, y - 5, width + 8, height * 0.55))
+    else:
+        painter.drawRoundedRect(QRectF(x, y, width, height), 2.0, 2.0)
+        if item.shape in ("oven", "fridge", "appliance"):
+            painter.setBrush(QColor("#30383D"))
+            painter.drawRect(QRectF(x + 4, y + 5, width - 8, height * 0.55))
+    painter.end()
+    return pixmap
 
 
 def catalogue_thumbnail(item: CatalogueItem, finish: str = "Cashmere") -> QPixmap:

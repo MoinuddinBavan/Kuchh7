@@ -5,7 +5,7 @@ from typing import Callable
 
 from PySide6.QtGui import QUndoCommand
 
-from ..models import Cabinet, Opening
+from ..models import Cabinet, HardwareAssignment, Opening
 
 
 class MoveCabinetCommand(QUndoCommand):
@@ -62,17 +62,33 @@ class RemoveCabinetCommand(QUndoCommand):
         cabinet: Cabinet,
         index: int,
         apply_removal: Callable[[Cabinet, int, bool], None],
+        assignments: list[HardwareAssignment] | None = None,
     ) -> None:
         super().__init__(f"Remove {cabinet.cabinet_id}")
         self.cabinet = deepcopy(cabinet)
         self.index = index
         self._apply_removal = apply_removal
+        self.assignments = deepcopy(assignments or [])
 
     def undo(self) -> None:
-        self._apply_removal(deepcopy(self.cabinet), self.index, False)
+        self._apply_removal(deepcopy(self.cabinet), self.index, False, deepcopy(self.assignments))
 
     def redo(self) -> None:
-        self._apply_removal(deepcopy(self.cabinet), self.index, True)
+        self._apply_removal(deepcopy(self.cabinet), self.index, True, deepcopy(self.assignments))
+
+
+class HardwareAssignmentCommand(QUndoCommand):
+    def __init__(self, assignment: HardwareAssignment, apply_change, add: bool = True) -> None:
+        super().__init__(f"{'Assign' if add else 'Remove'} {assignment.type_id}")
+        self.assignment = deepcopy(assignment)
+        self._apply_change = apply_change
+        self.add = add
+
+    def undo(self) -> None:
+        self._apply_change(deepcopy(self.assignment), not self.add)
+
+    def redo(self) -> None:
+        self._apply_change(deepcopy(self.assignment), self.add)
 
 
 class OpeningChangeCommand(QUndoCommand):

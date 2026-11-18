@@ -7,6 +7,7 @@ from typing import Any
 from .catalogue import FINISHES, LEGACY_FINISH_ALIASES, get_catalogue_item, normalized_finish
 from .openings import DOOR_SWINGS, OPENING_KINDS, WALL_IDS, opening_error, opening_furniture_conflict, wall_length
 from .placement import placement_error, volumes_intersect
+from .product_libraries import APPLIANCES, HARDWARE, PROPS, get_product
 
 
 MATERIALS = FINISHES
@@ -145,6 +146,63 @@ class Cabinet:
             raise ValueError("Cabinet elevation cannot be negative.")
 
 
+@dataclass
+class PlacedProduct:
+    item_id: str
+    type_id: str
+    position_x: int
+    position_y: int
+    elevation_z: int
+    width: int
+    depth: int
+    height: int
+    commercial_treatment: str | None = None
+    manufacturing_treatment: str | None = None
+
+    def __post_init__(self) -> None:
+        visual_only = get_product(self.type_id).library == PROPS
+        if self.commercial_treatment is None:
+            self.commercial_treatment = "Visual only" if visual_only else "Unpriced demo"
+        if self.manufacturing_treatment is None:
+            self.manufacturing_treatment = "Excluded" if visual_only else "Review required"
+
+    def validate(self, room: Room) -> None:
+        definition = get_product(self.type_id)
+        if definition.library not in (APPLIANCES, PROPS):
+            raise ValueError("Only appliances and visual props can be placed in the room.")
+        if definition.library == PROPS and (self.commercial_treatment != "Visual only"
+                                            or self.manufacturing_treatment != "Excluded"):
+            raise ValueError("Decorative props must remain visual only and excluded from manufacturing.")
+        if definition.library == APPLIANCES and (
+            self.commercial_treatment not in ("Unpriced demo", "Client supplied")
+            or self.manufacturing_treatment not in ("Review required", "Supplier supplied")
+        ):
+            raise ValueError("Unsupported appliance treatment; no prices or manufacturing rules are defined.")
+        if not self.item_id.strip() or self.width <= 0 or self.depth <= 0 or self.height <= 0:
+            raise ValueError("Placed product requires an ID and positive dimensions.")
+        if (self.position_x < 0 or self.position_y < 0 or self.elevation_z < 0
+                or self.position_x + self.width > room.width
+                or self.position_y + self.depth > room.depth
+                or self.elevation_z + self.height > room.height):
+            raise ValueError(f"{self.item_id} is outside the room boundaries.")
+
+
+@dataclass
+class HardwareAssignment:
+    assignment_id: str
+    cabinet_id: str
+    type_id: str
+    quantity: int = 1
+
+    def validate(self, cabinets: list[Cabinet]) -> None:
+        if get_product(self.type_id).library != HARDWARE:
+            raise ValueError("Assignment must use a hardware catalogue item.")
+        if not any(item.cabinet_id == self.cabinet_id for item in cabinets):
+            raise ValueError(f"Unknown cabinet for hardware assignment: {self.cabinet_id}")
+        if not self.assignment_id.strip() or self.quantity < 1:
+            raise ValueError("Hardware assignment requires an ID and positive quantity.")
+
+
 def _default_project_cabinet() -> Cabinet:
     return Cabinet(cabinet_id="C1", position_x=1350, position_y=2600)
 
@@ -159,8 +217,12 @@ class Project:
     cabinets: list[Cabinet] = field(default_factory=list)
     selected_cabinet_id: str | None = "C1"
     selected_opening_id: str | None = None
+    placed_products: list[PlacedProduct] = field(default_factory=list)
+    hardware_assignments: list[HardwareAssignment] = field(default_factory=list)
 
     def __post_init__(self) -> None:
+        self.placed_products = [item if isinstance(item, PlacedProduct) else PlacedProduct(**item) for item in self.placed_products]
+        self.hardware_assignments = [item if isinstance(item, HardwareAssignment) else HardwareAssignment(**item) for item in self.hardware_assignments]
         if not self.cabinets and self.cabinet is not None:
             if not self.cabinet.cabinet_id:
                 self.cabinet.cabinet_id = "C1"
@@ -264,6 +326,7 @@ class Project:
             if cabinet.cabinet_id != cabinet_id:
                 continue
             removed = self.cabinets.pop(index)
+            self.hardware_assignments = [item for item in self.hardware_assignments if item.cabinet_id != cabinet_id]
             if self.cabinets:
                 next_index = min(index, len(self.cabinets) - 1)
                 self.select_cabinet(self.cabinets[next_index].cabinet_id)
@@ -272,6 +335,33 @@ class Project:
                 self.selected_cabinet_id = None
             return removed
         raise ValueError(f"Cabinet {cabinet_id!r} does not exist.")
+
+    def next_product_id(self, library: str) -> str:
+        prefix = "P" if library == PROPS else "A"
+        used = {item.item_id for item in self.placed_products}
+        return next(f"{prefix}{number}" for number in range(1, 1000) if f"{prefix}{number}" not in used)
+
+    def add_product(self, item: PlacedProduct) -> None:
+        if any(existing.item_id == item.item_id for existing in self.placed_products):
+            raise ValueError(f"Placed product ID {item.item_id} is already in use.")
+        item.validate(self.room)
+        self.placed_products.append(item)
+
+    def remove_product(self, item_id: str) -> PlacedProduct:
+        for index, item in enumerate(self.placed_products):
+            if item.item_id == item_id:
+                return self.placed_products.pop(index)
+        raise ValueError(f"Placed product {item_id} does not exist.")
+
+    def next_assignment_id(self) -> str:
+        used = {item.assignment_id for item in self.hardware_assignments}
+        return next(f"H{number}" for number in range(1, 1000) if f"H{number}" not in used)
+
+    def add_hardware_assignment(self, assignment: HardwareAssignment) -> None:
+        if any(item.assignment_id == assignment.assignment_id for item in self.hardware_assignments):
+            raise ValueError(f"Hardware assignment ID {assignment.assignment_id} is already in use.")
+        assignment.validate(self.cabinets)
+        self.hardware_assignments.append(assignment)
 
     def restore_cabinet(self, cabinet: Cabinet, index: int) -> Cabinet:
         """Restore an undo snapshot at its original list position."""
@@ -335,6 +425,16 @@ class Project:
             raise ValueError("Cabinet IDs must be unique.")
         for cabinet in self.cabinets:
             self.validate_cabinet_placement(cabinet)
+        product_ids = [item.item_id for item in self.placed_products]
+        if len(product_ids) != len(set(product_ids)):
+            raise ValueError("Placed product IDs must be unique.")
+        for item in self.placed_products:
+            item.validate(self.room)
+        assignment_ids = [item.assignment_id for item in self.hardware_assignments]
+        if len(assignment_ids) != len(set(assignment_ids)):
+            raise ValueError("Hardware assignment IDs must be unique.")
+        for assignment in self.hardware_assignments:
+            assignment.validate(self.cabinets)
         if self.cabinets:
             selected_id = self.selected_cabinet_id
             if not any(item.cabinet_id == selected_id for item in self.cabinets):
@@ -349,13 +449,15 @@ class Project:
     def to_dict(self) -> dict[str, Any]:
         self.validate()
         return {
-            "schema_version": 6,
+            "schema_version": 7,
             "name": self.name,
             "project_type": self.project_type,
             "room": asdict(self.room),
             "cabinets": [asdict(cabinet) for cabinet in self.cabinets],
             "selected_cabinet_id": self.selected_cabinet_id,
             "selected_opening_id": self.selected_opening_id,
+            "placed_products": [asdict(item) for item in self.placed_products],
+            "hardware_assignments": [asdict(item) for item in self.hardware_assignments],
         }
 
     @classmethod
@@ -387,6 +489,8 @@ class Project:
             cabinets=cabinets,
             selected_cabinet_id=selected_id,
             selected_opening_id=data.get("selected_opening_id"),
+            placed_products=[PlacedProduct(**item) for item in data.get("placed_products", [])],
+            hardware_assignments=[HardwareAssignment(**item) for item in data.get("hardware_assignments", [])],
         )
         project.validate()
         return project

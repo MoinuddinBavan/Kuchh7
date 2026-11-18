@@ -10,7 +10,8 @@ from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPolygonF
 from PySide6.QtWidgets import QGraphicsItem, QGraphicsScene, QGraphicsView, QVBoxLayout, QWidget
 
 from ..catalogue import create_catalogue_cabinet, get_catalogue_item, normalized_finish
-from ..models import Cabinet, Opening, Room
+from ..models import Cabinet, Opening, PlacedProduct, Room
+from ..product_libraries import get_product
 from ..openings import opening_error, opening_furniture_conflict, wall_length
 from ..placement import placement_error, snap_position
 from ..presentation import connected_base_runs
@@ -56,6 +57,9 @@ class RoomPlanView(QGraphicsView):
     openingSelected = Signal(str)
     openingMoveRequested = Signal(str, int)
     openingPlacementRequested = Signal(str, str, int)
+    productSelected = Signal(str)
+    productPlacementRequested = Signal(str, int, int)
+    productMoveRequested = Signal(str, int, int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -79,6 +83,11 @@ class RoomPlanView(QGraphicsView):
         self._ox = 0.0
         self._oy = 0.0
         self._cabinet_items: dict[str, QGraphicsItem] = {}
+        self._product_items: dict[str, QGraphicsItem] = {}
+        self._products: list[PlacedProduct] = []
+        self._selected_product_id: str | None = None
+        self._pending_product_type_id: str | None = None
+        self._dragging_product_id: str | None = None
         self._wall_items: dict[str, QGraphicsItem] = {}
         self._opening_items: dict[str, QGraphicsItem] = {}
         self._pending_type_id: str | None = None
@@ -142,6 +151,8 @@ class RoomPlanView(QGraphicsView):
         selected_cabinet_id: str = "C1",
         selected_opening_id: str | None = None,
         selected_wall_id: str = "WEST",
+        placed_products: list[PlacedProduct] | None = None,
+        selected_product_id: str | None = None,
     ) -> None:
         if isinstance(cabinets, Cabinet):
             cabinets = [cabinets]
@@ -150,9 +161,12 @@ class RoomPlanView(QGraphicsView):
         self._selected_cabinet_id = selected_cabinet_id
         self._selected_opening_id = selected_opening_id
         self._selected_wall_id = selected_wall_id
+        self._products = placed_products or []
+        self._selected_product_id = selected_product_id
         scene = self.scene()
         scene.clear()
         self._cabinet_items.clear()
+        self._product_items.clear()
         self._wall_items.clear()
         self._opening_items.clear()
         self._preview_item = None
@@ -250,6 +264,27 @@ class RoomPlanView(QGraphicsView):
                 label.setPos(cabinet_x + 6, cabinet_y + cd + 4)
             else:
                 label.setPos(cabinet_x + 6, cabinet_y + 5)
+
+        for product in self._products:
+            definition = get_product(product.type_id)
+            selected = product.item_id == selected_product_id
+            x, y = ox + product.position_x * scale, oy + product.position_y * scale
+            colour = QColor(definition.colour)
+            colour.setAlpha(185 if selected else 135)
+            pen = QPen(QColor("#147D83" if selected else "#6B7880"), 2.6 if selected else 1.4)
+            if product.elevation_z:
+                pen.setStyle(Qt.PenStyle.DashLine)
+            footprint = scene.addRect(x, y, product.width * scale, product.depth * scale, pen, colour)
+            footprint.setData(0, f"product:{product.item_id}")
+            footprint.setToolTip(f"{product.item_id} · {definition.name}\n{product.width} × {product.depth} × {product.height} mm")
+            footprint.setZValue(40)
+            self._product_items[product.item_id] = footprint
+            label = scene.addText(f"{product.item_id} · {definition.name.split()[-1].upper()}",
+                                  QFont("Segoe UI", 7, QFont.Weight.DemiBold))
+            label.setData(0, f"product:{product.item_id}")
+            label.setDefaultTextColor(QColor("#173B44"))
+            label.setPos(x + 3, y + 2)
+            label.setZValue(41)
 
         self._draw_horizontal_dimension(ox, ox + rw, oy, room.width)
         self._draw_vertical_dimension(oy, oy + rd, ox, room.depth)
@@ -394,6 +429,13 @@ class RoomPlanView(QGraphicsView):
         self.setCursor(Qt.CursorShape.CrossCursor)
         self.setFocus()
 
+    def begin_product_placement(self, type_id: str) -> None:
+        self.cancel_interaction(emit_signal=False)
+        get_product(type_id)
+        self._pending_product_type_id = type_id
+        self.setCursor(Qt.CursorShape.CrossCursor)
+        self.setFocus()
+
     def cancel_interaction(self, *, emit_signal: bool = True) -> None:
         had_interaction = any((
             self._pending_type_id is not None,
@@ -401,9 +443,13 @@ class RoomPlanView(QGraphicsView):
             self._pending_opening_kind is not None,
             self._dragging_opening_id is not None,
             self._wall_select_mode,
+            self._pending_product_type_id is not None,
+            self._dragging_product_id is not None,
         ))
         self._pending_type_id = None
         self._dragging_id = None
+        self._pending_product_type_id = None
+        self._dragging_product_id = None
         self._pending_opening_kind = None
         self._pending_opening_wall_id = None
         self._dragging_opening_id = None
@@ -487,6 +533,26 @@ class RoomPlanView(QGraphicsView):
         return valid
 
     def _preview_from_cursor(self, model_point: QPointF) -> None:
+        if self._pending_product_type_id or self._dragging_product_id:
+            product = (next(item for item in self._products if item.item_id == self._dragging_product_id)
+                       if self._dragging_product_id else None)
+            definition = get_product(product.type_id if product else self._pending_product_type_id)
+            width = product.width if product else definition.width
+            depth = product.depth if product else definition.depth
+            x = round(model_point.x() - (self._drag_offset.x() if product else width / 2))
+            y = round(model_point.y() - (self._drag_offset.y() if product else depth / 2))
+            self._clear_preview()
+            valid = x >= 0 and y >= 0 and x + width <= self._room.width and y + depth <= self._room.depth
+            colour = QColor("#39A58A" if valid else "#C95145")
+            colour.setAlpha(95)
+            self._preview_item = self.scene().addRect(
+                self._ox + x * self._scale, self._oy + y * self._scale,
+                width * self._scale, depth * self._scale,
+                QPen(QColor("#147D83" if valid else "#9A2F29"), 2, Qt.PenStyle.DashLine), colour,
+            )
+            self._preview_item.setZValue(100)
+            self._preview_position, self._preview_valid = (x, y), valid
+            return
         if self._pending_type_id:
             candidate = create_catalogue_cabinet(self._pending_type_id, "PREVIEW")
             candidate.position_x = round(model_point.x() - candidate.width / 2)
@@ -527,8 +593,24 @@ class RoomPlanView(QGraphicsView):
                 self.placementRequested.emit(self._pending_type_id, *self._preview_position)
             event.accept()
             return
+        if self._pending_product_type_id:
+            self._preview_from_cursor(model_point)
+            if self._preview_valid and self._preview_position:
+                self.productPlacementRequested.emit(self._pending_product_type_id, *self._preview_position)
+            event.accept()
+            return
         item = self.itemAt(event.position().toPoint())
         item_data = item.data(0) if item else None
+        if isinstance(item_data, str) and item_data.startswith("product:"):
+            product_id = item_data.split(":", 1)[1]
+            product = next(item for item in self._products if item.item_id == product_id)
+            self.productSelected.emit(product_id)
+            self._dragging_product_id = product_id
+            self._drag_offset = QPointF(model_point.x() - product.position_x, model_point.y() - product.position_y)
+            self._drag_started = False
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            event.accept()
+            return
         if isinstance(item_data, str) and item_data.startswith("opening:"):
             opening_id = item_data.split(":", 1)[1]
             opening = self._opening_for_id(opening_id)
@@ -575,15 +657,25 @@ class RoomPlanView(QGraphicsView):
             self._drag_started = True
             event.accept()
             return
-        if self._pending_type_id or self._dragging_id:
+        if self._pending_type_id or self._dragging_id or self._pending_product_type_id or self._dragging_product_id:
             self._preview_from_cursor(model_point)
-            if self._dragging_id:
+            if self._dragging_id or self._dragging_product_id:
                 self._drag_started = True
             event.accept()
             return
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton and self._dragging_product_id:
+            product_id = self._dragging_product_id
+            if self._drag_started and self._preview_valid and self._preview_position:
+                self.productMoveRequested.emit(product_id, *self._preview_position)
+            self._dragging_product_id = None
+            self._drag_started = False
+            self._clear_preview()
+            self.unsetCursor()
+            event.accept()
+            return
         if event.button() == Qt.MouseButton.LeftButton and self._dragging_opening_id:
             opening_id = self._dragging_opening_id
             if self._drag_started and self._preview_valid and self._preview_position:
@@ -613,6 +705,8 @@ class RoomPlanView(QGraphicsView):
             self._pending_opening_kind,
             self._dragging_opening_id,
             self._wall_select_mode,
+            self._pending_product_type_id,
+            self._dragging_product_id,
         )):
             self.cancel_interaction()
             event.accept()
@@ -627,6 +721,8 @@ class Cabinet3DView(QWidget):
         self._cabinet = Cabinet()
         self._cabinets = [self._cabinet]
         self._room = Room()
+        self._products: list[PlacedProduct] = []
+        self._selected_product_id: str | None = None
         self._selected_cabinet_id = self._cabinet.cabinet_id
         self._doors_visible = True
         self._presentation_mode = False
@@ -734,11 +830,15 @@ class Cabinet3DView(QWidget):
         cabinets: list[Cabinet],
         selected_cabinet_id: str | None,
         reset_camera: bool = False,
+        placed_products: list[PlacedProduct] | None = None,
+        selected_product_id: str | None = None,
     ) -> None:
         room.validate()
         for cabinet in cabinets:
             cabinet.validate()
         self._room = room
+        self._products = placed_products or []
+        self._selected_product_id = selected_product_id
         self._cabinets = cabinets
         self._selected_cabinet_id = selected_cabinet_id
         self._cabinet = next(
@@ -759,6 +859,8 @@ class Cabinet3DView(QWidget):
             self.plotter.set_background("#F3F6F8", top="#DDE6EC")
         for cabinet in cabinets:
             self._add_cabinet_geometry(cabinet, cabinet.cabinet_id == selected_cabinet_id)
+        for product in self._products:
+            self._add_product_geometry(product)
 
         self._configure_lighting()
         if not self._presentation_mode:
@@ -771,6 +873,55 @@ class Cabinet3DView(QWidget):
             # Preserve the chosen viewing direction while fitting changed geometry.
             self.plotter.reset_camera()
             self.plotter.render()
+
+    def _add_product_geometry(self, product: PlacedProduct) -> None:
+        """Visual sample geometry from persisted dimensions; never BOM components."""
+        definition = get_product(product.type_id)
+        origin_x = min((item.position_x for item in self._cabinets), default=0)
+        origin_y = min((item.position_y for item in self._cabinets), default=0)
+        x, y, z = product.position_x - origin_x, product.position_y - origin_y, product.elevation_z
+        w, d, h = product.width, product.depth, product.height
+        name = f"product-{product.item_id}"
+        if product.item_id == self._selected_product_id:
+            outline = self._box(x - 5, x + w + 5, y - 5, y + d + 5, z - 5, z + h + 5)
+            actor = self.plotter.add_mesh(outline, name=f"{name}-selection", style="wireframe",
+                                          color="#147D83", opacity=0.60, line_width=2, pickable=False)
+            actor.SetUseBounds(False)
+        if definition.shape in ("plant", "vase", "jar", "light", "tap"):
+            radius = min(w, d) * (0.30 if definition.shape == "tap" else 0.43)
+            cylinder = pv.Cylinder(center=(x + w / 2, y + d / 2, z + h / 2), radius=radius, height=h)
+            self.plotter.add_mesh(cylinder, name=name, color=definition.colour, ambient=0.4, diffuse=0.6)
+            if definition.shape == "plant":
+                leaves = pv.Sphere(radius=min(w, d) * 0.46,
+                                   center=(x + w / 2, y + d / 2, z + h * 0.82))
+                self.plotter.add_mesh(leaves, name=f"{name}-leaves", color="#52765A")
+            if definition.shape == "tap":
+                spout = pv.Cylinder(center=(x + w / 2, y + d * 0.75, z + h * 0.9),
+                                     direction=(0, 1, 0), radius=10, height=d * 0.5)
+                self.plotter.add_mesh(spout, name=f"{name}-spout", color="#C6CFD0")
+            return
+        body = self._box(x, x + w, y, y + d, z, z + h)
+        self.plotter.add_mesh(body, name=name, color=definition.colour, show_edges=True,
+                              edge_color="#68747A", ambient=0.38, diffuse=0.62, specular=0.14)
+        if definition.shape in ("oven", "appliance", "fridge"):
+            front = self._box(x + w * 0.08, x + w * 0.92, y - 3, y + 3,
+                              z + h * 0.18, z + h * 0.82)
+            self.plotter.add_mesh(front, name=f"{name}-front",
+                                  color="#30383D" if definition.shape == "oven" else "#7F8C91")
+            handle = self._box(x + w * 0.3, x + w * 0.7, y - 11, y - 3,
+                               z + h * 0.78, z + h * 0.81)
+            self.plotter.add_mesh(handle, name=f"{name}-handle", color="#C8D0D0")
+        elif definition.shape == "hob":
+            for index, (ix, iy) in enumerate(((0.28, 0.3), (0.72, 0.3), (0.28, 0.7), (0.72, 0.7))):
+                zone = pv.Cylinder(center=(x + w * ix, y + d * iy, z + h + 2),
+                                   radius=min(w, d) * 0.12, height=4)
+                self.plotter.add_mesh(zone, name=f"{name}-zone-{index}", color="#A8B1B2")
+        elif definition.shape == "sink":
+            rim = self._box(x + 12, x + w - 12, y + 12, y + d - 12, z + h - 12, z + h + 8)
+            basin = self._box(x + 35, x + w - 35, y + 35, y + d - 35,
+                              z + h - min(95, h * 0.8), z + h - 15)
+            self.plotter.add_mesh(rim, name=f"{name}-rim", color="#D3DADB")
+            self.plotter.add_mesh(basin, name=f"{name}-basin", color="#65747A")
 
     def _add_environment_mesh(self, mesh, *, name: str, colour: str, wall: bool = False, **kwargs):
         actor = self.plotter.add_mesh(
@@ -1217,7 +1368,8 @@ class Cabinet3DView(QWidget):
         if self._presentation_mode == enabled:
             return
         self._presentation_mode = enabled
-        self.update_scene(self._room, self._cabinets, self._selected_cabinet_id, reset_camera=True)
+        self.update_scene(self._room, self._cabinets, self._selected_cabinet_id, reset_camera=True,
+                          placed_products=self._products, selected_product_id=self._selected_product_id)
 
     def set_room_walls_visible(self, visible: bool, *, render: bool = True) -> None:
         self._room_walls_visible = visible

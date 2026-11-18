@@ -1,5 +1,30 @@
 # kuchhe7 Client Approval Demo v1.0.1
 
+## Stage 1 product libraries (demonstration extension)
+
+The Project explorer now also has a **Libraries** tab with four groups:
+Furniture (Kitchen, Wardrobe, Vanity), Appliances/Sinks/Taps, Decorative Props,
+and Hardware/Accessories. Select a product and use **Place selected product in
+2D**; click the room plan to place it, or press Esc to cancel. Placed appliances
+and props can be selected in the plan or project tree, dragged in 2D, edited
+numerically in Properties, removed, and saved in the same JSON project. The 3D
+scene draws them from the same stored dimensions. Hardware catalogue items are
+assigned to the selected cabinet and listed separately in the project tree.
+
+**Decorative props are always visual-only.** They do not enter the cabinet BOM,
+engineering preview, sheet nesting, XLSX or DXF. Appliance treatment is stored
+as unpriced review/supplier metadata; no prices or manufacturing rules are
+inferred. Hardware assignments are demonstration metadata; the established
+cabinet hardware BOM rules remain unchanged. Wardrobe and vanity cabinet BOM
+values still use illustrative rules and are not approved for manufacture.
+
+Legacy JSON projects open with empty product/assignment lists. The new fields
+use schema version 7. To capture the four library tabs in the real Windows UI:
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.capture_stage1_libraries
+```
+
 `kuchhe7` is a native Windows desktop demonstration for kitchen, wardrobe, and
 vanity project configuration. It was prepared by **AIZ INFOTECHS** as a first
 client milestone. The BOM and DXF output use illustrative construction rules;

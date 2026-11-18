@@ -61,10 +61,27 @@ CATALOGUE = (
 CATALOGUE_BY_ID = {item.type_id: item for item in CATALOGUE}
 CATEGORIES = tuple(dict.fromkeys(item.category for item in CATALOGUE))
 
+# Keep the original 15-model catalogue stable for existing projects and UI.
+WARDROBE_CATALOGUE = (
+    CatalogueItem("wardrobe_2_door", "Wardrobe", "Two-door Wardrobe", 1200, 2100, 600, door_count=2, shelf_count=4),
+    CatalogueItem("wardrobe_open", "Wardrobe", "Open Wardrobe Shelves", 900, 2100, 550, shelf_count=5, front_style="open"),
+)
+FURNITURE_FAMILIES = ("Kitchen", "Wardrobe", "Vanity")
+
+
+def furniture_items(family: str) -> tuple[CatalogueItem, ...]:
+    if family == "Kitchen":
+        return tuple(item for item in CATALOGUE if item.category != "Vanity")
+    if family == "Wardrobe":
+        return WARDROBE_CATALOGUE
+    if family == "Vanity":
+        return tuple(item for item in CATALOGUE if item.category == "Vanity")
+    raise ValueError(f"Unsupported furniture family: {family}")
+
 
 def get_catalogue_item(type_id: str) -> CatalogueItem:
     try:
-        return CATALOGUE_BY_ID[type_id]
+        return {**CATALOGUE_BY_ID, **{item.type_id: item for item in WARDROBE_CATALOGUE}}[type_id]
     except KeyError as error:
         raise ValueError(f"Unsupported cabinet type: {type_id}") from error
 

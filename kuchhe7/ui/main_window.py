@@ -40,15 +40,16 @@ from PySide6.QtWidgets import (
 )
 
 from ..bom import generate_project_bom
-from ..catalogue import CATEGORIES, catalogue_items, create_catalogue_cabinet, get_catalogue_item
+from ..catalogue import CATEGORIES, FURNITURE_FAMILIES, catalogue_items, create_catalogue_cabinet, furniture_items, get_catalogue_item
 from ..exports import export_bom_xlsx, export_front_elevation_dxf
-from ..models import MATERIALS, MAX_CABINETS, PROJECT_TYPES, Opening, Project
+from ..models import MATERIALS, MAX_CABINETS, PROJECT_TYPES, HardwareAssignment, Opening, PlacedProduct, Project
+from ..product_libraries import APPLIANCES, FURNITURE, HARDWARE, LIBRARIES, PROPS, get_product, products_for
 from ..openings import DOOR_SWINGS, WALL_IDS, WALL_LABELS, wall_length
 from ..persistence import load_project, save_project
 from ..platform_support import is_macos, platform_shortcut
 from .cad_views import Cabinet3DView, RoomPlanView
-from .catalogue_preview import catalogue_thumbnail
-from .history import AddCabinetCommand, MoveCabinetCommand, OpeningChangeCommand, RemoveCabinetCommand
+from .catalogue_preview import catalogue_thumbnail, product_thumbnail
+from .history import AddCabinetCommand, HardwareAssignmentCommand, MoveCabinetCommand, OpeningChangeCommand, RemoveCabinetCommand
 from .manufacturing_preview import ManufacturingPreviewWidget
 from .sheet_nesting import SheetNestingWidget
 
@@ -74,6 +75,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.project = Project.empty() if start_empty else Project()
         self.project_path: Path | None = None
+        self.selected_product_id: str | None = None
+        self.selected_hardware_assignment_id: str | None = None
         self._dirty = False
         self._updating_controls = False
         self._updating_opening_controls = False
@@ -96,7 +99,7 @@ class MainWindow(QMainWindow):
         self._build_properties()
         self._build_bom()
         self._build_status_bar()
-        self.resizeDocks([self.explorer_dock, self.properties_dock], [330, 305], Qt.Orientation.Horizontal)
+        self.resizeDocks([self.explorer_dock, self.properties_dock], [330, 365], Qt.Orientation.Horizontal)
         self.resizeDocks([self.bom_dock], [245], Qt.Orientation.Vertical)
         self.statusBar().showMessage("Ready — demonstration construction rules are not factory approved")
         self.refresh_all(reset_camera=True)
@@ -354,6 +357,9 @@ class MainWindow(QMainWindow):
         self.plan_view.openingSelected.connect(self.select_opening)
         self.plan_view.openingMoveRequested.connect(self.move_opening)
         self.plan_view.openingPlacementRequested.connect(self._place_opening)
+        self.plan_view.productSelected.connect(self.select_product)
+        self.plan_view.productPlacementRequested.connect(self._place_product)
+        self.plan_view.productMoveRequested.connect(self.move_product)
         self.view3d = Cabinet3DView()
         self.plan_panel = self._canvas_panel(
             "2D ROOM PLAN", "Click to select • drag to move • Esc to cancel", self.plan_view
@@ -415,6 +421,36 @@ class MainWindow(QMainWindow):
         catalogue_layout.addWidget(self.catalogue_detail)
         catalogue_layout.addWidget(self.catalogue_add_button)
         self.explorer_tabs.addTab(catalogue_page, "Catalogue")
+        library_page = QWidget()
+        library_layout = QVBoxLayout(library_page)
+        library_layout.setContentsMargins(8, 10, 8, 10)
+        library_layout.setSpacing(8)
+        self.library_combo = QComboBox()
+        self.library_combo.addItems(LIBRARIES)
+        self.library_family_combo = QComboBox()
+        self.library_family_combo.addItems(FURNITURE_FAMILIES)
+        self.library_list = QListWidget()
+        self.library_list.setAlternatingRowColors(True)
+        self.library_list.setIconSize(QSize(76, 60))
+        self.library_description = QLabel()
+        self.library_description.setWordWrap(True)
+        self.hardware_quantity_spin = self._spin(1, 100, "")
+        self.hardware_quantity_spin.setValue(1)
+        self.hardware_quantity_label = QLabel("Assignment quantity (demo metadata)")
+        self.library_add_button = QPushButton("Place selected product in 2D")
+        self.library_add_button.setObjectName("primaryButton")
+        self.library_remove_hardware_button = QPushButton("Remove selected hardware assignment")
+        self.library_remove_hardware_button.hide()
+        library_layout.addWidget(QLabel("PRODUCT LIBRARY"))
+        library_layout.addWidget(self.library_combo)
+        library_layout.addWidget(self.library_family_combo)
+        library_layout.addWidget(self.library_list, 1)
+        library_layout.addWidget(self.library_description)
+        library_layout.addWidget(self.hardware_quantity_label)
+        library_layout.addWidget(self.hardware_quantity_spin)
+        library_layout.addWidget(self.library_add_button)
+        library_layout.addWidget(self.library_remove_hardware_button)
+        self.explorer_tabs.addTab(library_page, "Libraries")
         self.explorer_dock.setWidget(self.explorer_tabs)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.explorer_dock)
         self.catalogue_category_combo.currentTextChanged.connect(self._populate_catalogue)
@@ -422,6 +458,53 @@ class MainWindow(QMainWindow):
         self.catalogue_list.itemDoubleClicked.connect(lambda _item: self.begin_catalogue_placement())
         self.catalogue_add_button.clicked.connect(self.begin_catalogue_placement)
         self._populate_catalogue()
+        self.library_combo.currentTextChanged.connect(self._populate_product_library)
+        self.library_family_combo.currentTextChanged.connect(self._populate_product_library)
+        self.library_list.currentItemChanged.connect(self._library_selection_changed)
+        self.library_add_button.clicked.connect(self.begin_library_placement)
+        self.library_remove_hardware_button.clicked.connect(self.remove_selected_hardware_assignment)
+        self.library_list.itemDoubleClicked.connect(lambda _item: self.begin_library_placement())
+        self._populate_product_library()
+
+    def _populate_product_library(self, *_args) -> None:
+        library = self.library_combo.currentText()
+        self.library_family_combo.setVisible(library == FURNITURE)
+        self.library_list.clear()
+        if library == FURNITURE:
+            definitions = furniture_items(self.library_family_combo.currentText())
+            rows = [(item.type_id, item.name, item.category, item.width, item.depth, item.height)
+                    for item in definitions]
+        else:
+            rows = [(item.type_id, item.name, item.category, item.width, item.depth, item.height)
+                    for item in products_for(library)]
+        for type_id, name, category, width, depth, height in rows:
+            pixmap = (catalogue_thumbnail(get_catalogue_item(type_id)) if library == FURNITURE
+                      else product_thumbnail(get_product(type_id)))
+            row = QListWidgetItem(QIcon(pixmap), f"{name}\n{category} · {width} × {depth} × {height} mm")
+            row.setData(Qt.ItemDataRole.UserRole, type_id)
+            row.setSizeHint(QSize(0, 48))
+            self.library_list.addItem(row)
+        if rows:
+            self.library_list.setCurrentRow(0)
+        self.library_add_button.setText("Assign to selected cabinet" if library == HARDWARE else "Place selected product in 2D")
+        self.library_remove_hardware_button.setVisible(library == HARDWARE)
+        self.hardware_quantity_spin.setVisible(library == HARDWARE)
+        self.hardware_quantity_label.setVisible(library == HARDWARE)
+
+    def _library_selection_changed(self, current: QListWidgetItem | None, _previous=None) -> None:
+        if current is None:
+            self.library_description.clear()
+            return
+        library = self.library_combo.currentText()
+        if library == PROPS:
+            note = "Visual only · excluded from BOM, nesting, drilling and exports."
+        elif library == HARDWARE:
+            note = "Demo assignment to selected cabinet · existing BOM rules unchanged."
+        elif library == APPLIANCES:
+            note = "Sample product · commercial and manufacturing treatment requires client approval."
+        else:
+            note = "Furniture uses existing illustrative cabinet construction rules."
+        self.library_description.setText(note)
 
     def _populate_catalogue(self, *_args) -> None:
         self.catalogue_list.clear()
@@ -576,6 +659,43 @@ class MainWindow(QMainWindow):
         layout.addWidget(room_group)
         layout.addWidget(self.opening_group)
         layout.addWidget(self.cabinet_group)
+        self.product_group = QGroupBox("Selected library product")
+        product_form = QFormLayout(self.product_group)
+        self.product_id_label = QLabel()
+        self.product_name_label = QLabel()
+        self.product_rule_label = QLabel()
+        self.product_rule_label.setWordWrap(True)
+        self.product_rule_label.setMaximumWidth(210)
+        self.product_x_spin = self._spin(0, 20000)
+        self.product_y_spin = self._spin(0, 20000)
+        self.product_z_spin = self._spin(0, 5000)
+        self.product_width_spin = self._spin(20, 3000)
+        self.product_depth_spin = self._spin(20, 3000)
+        self.product_height_spin = self._spin(10, 3000)
+        self.product_remove_button = QPushButton("Remove selected product")
+        product_form.addRow("Product ID", self.product_id_label)
+        product_form.addRow("Model", self.product_name_label)
+        product_form.addRow(self.product_rule_label)
+        for label, control in (("Position X", self.product_x_spin), ("Position Y", self.product_y_spin),
+                               ("Elevation Z", self.product_z_spin), ("Width", self.product_width_spin),
+                               ("Depth", self.product_depth_spin), ("Height", self.product_height_spin)):
+            product_form.addRow(label, control)
+            control.valueChanged.connect(self._product_properties_changed)
+        product_form.addRow(self.product_remove_button)
+        self.product_treatment_group = QGroupBox("Product treatment")
+        treatment_form = QFormLayout(self.product_treatment_group)
+        self.product_commercial_combo = QComboBox()
+        self.product_commercial_combo.addItems(["Unpriced demo", "Client supplied"])
+        self.product_manufacturing_combo = QComboBox()
+        self.product_manufacturing_combo.addItems(["Review required", "Supplier supplied"])
+        treatment_form.addRow("Commercial", self.product_commercial_combo)
+        treatment_form.addRow("Manufacturing", self.product_manufacturing_combo)
+        self.product_commercial_combo.currentTextChanged.connect(self._product_properties_changed)
+        self.product_manufacturing_combo.currentTextChanged.connect(self._product_properties_changed)
+        product_form.addRow(self.product_treatment_group)
+        self.product_remove_button.clicked.connect(self.remove_selected_product)
+        self.product_group.hide()
+        layout.addWidget(self.product_group)
         layout.addWidget(self.placement_warning)
         layout.addWidget(note)
         layout.addStretch()
@@ -662,7 +782,10 @@ class MainWindow(QMainWindow):
                 (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) if is_macos() else (Qt.Key.Key_Delete,)
             )
         ):
-            self.remove_selected_cabinet()
+            if self.selected_product_id is not None:
+                self.remove_selected_product()
+            else:
+                self.remove_selected_cabinet()
             event.accept()
             return True
         return super().eventFilter(watched, event)
@@ -773,6 +896,7 @@ class MainWindow(QMainWindow):
         if wall_id not in WALL_IDS:
             return
         self.selected_wall_id = wall_id
+        self.selected_product_id = None
         self.project.select_opening(None)
         self._load_opening_controls()
         self.refresh_visuals(reset_camera=False)
@@ -826,6 +950,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(str(error))
             return
         self.selected_wall_id = opening.wall_id
+        self.selected_product_id = None
         self._load_opening_controls()
         self.refresh_visuals(reset_camera=False)
         self.statusBar().showMessage(f"Selected {opening.kind} {opening.opening_id} on {opening.wall_id}")
@@ -1062,6 +1187,10 @@ class MainWindow(QMainWindow):
         self._updating_opening_controls = False
 
     def refresh_all(self, reset_camera: bool = False) -> None:
+        if not any(item.item_id == self.selected_product_id for item in self.project.placed_products):
+            self.selected_product_id = None
+        if not any(item.assignment_id == self.selected_hardware_assignment_id for item in self.project.hardware_assignments):
+            self.selected_hardware_assignment_id = None
         self._load_selected_controls()
         self.placement_warning.hide()
         self.status_project_label.setText(f"{self.project.name}  •  {self.project.project_type}")
@@ -1094,16 +1223,21 @@ class MainWindow(QMainWindow):
         self.plan_view.redraw(
             self.project.room,
             self.project.cabinets,
-            self.project.selected_cabinet_id,
+            None if self.selected_product_id else self.project.selected_cabinet_id,
             self.project.selected_opening_id,
             self.selected_wall_id,
+            self.project.placed_products,
+            self.selected_product_id,
         )
         self.view3d.update_scene(
             self.project.room,
             self.project.cabinets,
-            self.project.selected_cabinet_id,
+            None if self.selected_product_id else self.project.selected_cabinet_id,
             reset_camera,
+            placed_products=self.project.placed_products,
+            selected_product_id=self.selected_product_id,
         )
+        self._load_product_controls()
         if hasattr(self, "manufacturing_preview"):
             self.manufacturing_preview.set_cabinet(self.project.selected_cabinet)
         if hasattr(self, "sheet_nesting"):
@@ -1146,10 +1280,28 @@ class MainWindow(QMainWindow):
             furniture.addChild(item)
         # Preserve the v0.5 Furniture node index for compatibility.
         root.addChildren([room, furniture, walls])
+        products_node = QTreeWidgetItem([f"Placed products ({len(self.project.placed_products)})"])
+        for product in self.project.placed_products:
+            definition = get_product(product.type_id)
+            entry = QTreeWidgetItem([f"{product.item_id} — {definition.name}"])
+            entry.setData(0, Qt.ItemDataRole.UserRole, f"product:{product.item_id}")
+            products_node.addChild(entry)
+            if product.item_id == self.selected_product_id:
+                selected_item = entry
+        root.addChild(products_node)
+        hardware_node = QTreeWidgetItem([f"Hardware assignments ({len(self.project.hardware_assignments)})"])
+        for assignment in self.project.hardware_assignments:
+            definition = get_product(assignment.type_id)
+            entry = QTreeWidgetItem([f"{assignment.assignment_id} — {definition.name} → {assignment.cabinet_id} ×{assignment.quantity}"])
+            entry.setData(0, Qt.ItemDataRole.UserRole, f"hardware:{assignment.assignment_id}")
+            hardware_node.addChild(entry)
+        root.addChild(hardware_node)
         self.project_tree.addTopLevelItem(root)
         root.setExpanded(True)
         walls.setExpanded(True)
         furniture.setExpanded(True)
+        products_node.setExpanded(True)
+        hardware_node.setExpanded(True)
         for index in range(walls.childCount()):
             walls.child(index).setExpanded(True)
         if selected_opening_item is not None:
@@ -1179,10 +1331,17 @@ class MainWindow(QMainWindow):
             self.select_opening(item_id.split(":", 1)[1])
         elif isinstance(item_id, str) and item_id.startswith("wall:"):
             self.select_wall(item_id.split(":", 1)[1])
+        elif isinstance(item_id, str) and item_id.startswith("product:"):
+            self.select_product(item_id.split(":", 1)[1])
+        elif isinstance(item_id, str) and item_id.startswith("hardware:"):
+            assignment = next(item for item in self.project.hardware_assignments if item.assignment_id == item_id.split(":", 1)[1])
+            self.selected_hardware_assignment_id = assignment.assignment_id
+            self.select_cabinet(assignment.cabinet_id)
         elif item_id:
             self.select_cabinet(item_id)
 
     def select_cabinet(self, cabinet_id: str) -> None:
+        self.selected_product_id = None
         try:
             self.project.select_cabinet(cabinet_id)
             self.project.select_opening(None)
@@ -1194,6 +1353,154 @@ class MainWindow(QMainWindow):
         self.refresh_visuals()
         self.width_spin.setFocus()
         self.statusBar().showMessage(f"Selected cabinet {cabinet_id}")
+
+    def _load_product_controls(self) -> None:
+        product = next((item for item in self.project.placed_products if item.item_id == self.selected_product_id), None)
+        self.product_group.setVisible(product is not None)
+        if product is None:
+            return
+        self.cabinet_group.hide()
+        self.opening_group.hide()
+        self._updating_product_controls = True
+        self.product_id_label.setText(product.item_id)
+        self.product_name_label.setText(get_product(product.type_id).name)
+        self.product_rule_label.setText(
+            "Visual only. Excluded from BOM,\nnesting, drilling and exports."
+            if get_product(product.type_id).library == PROPS
+            else "Unpriced sample. Manufacturing\ntreatment is metadata only."
+        )
+        self.product_treatment_group.setVisible(get_product(product.type_id).library == APPLIANCES)
+        if get_product(product.type_id).library == APPLIANCES:
+            self.product_commercial_combo.setCurrentText(product.commercial_treatment)
+            self.product_manufacturing_combo.setCurrentText(product.manufacturing_treatment)
+        for control, value in ((self.product_x_spin, product.position_x), (self.product_y_spin, product.position_y),
+                               (self.product_z_spin, product.elevation_z), (self.product_width_spin, product.width),
+                               (self.product_depth_spin, product.depth), (self.product_height_spin, product.height)):
+            control.setValue(value)
+        self._updating_product_controls = False
+
+    def select_product(self, item_id: str) -> None:
+        if not any(item.item_id == item_id for item in self.project.placed_products):
+            return
+        self.selected_product_id = item_id
+        self.project.select_opening(None)
+        self._load_opening_controls()
+        self.refresh_visuals()
+        self.statusBar().showMessage(f"Selected library product {item_id}")
+
+    def begin_library_placement(self) -> None:
+        current = self.library_list.currentItem()
+        if current is None:
+            self.statusBar().showMessage("Select a library product first")
+            return
+        type_id = current.data(Qt.ItemDataRole.UserRole)
+        library = self.library_combo.currentText()
+        try:
+            if library == FURNITURE:
+                if len(self.project.cabinets) >= MAX_CABINETS:
+                    raise ValueError(f"This demo supports a maximum of {MAX_CABINETS} cabinets.")
+                self.plan_view.begin_placement(type_id)
+            elif library == HARDWARE:
+                cabinet = self.project.selected_cabinet
+                if cabinet is None:
+                    raise ValueError("Select a cabinet before assigning hardware.")
+                assignment = HardwareAssignment(self.project.next_assignment_id(), cabinet.cabinet_id, type_id,
+                                                self.hardware_quantity_spin.value())
+                self.undo_stack.push(HardwareAssignmentCommand(assignment, self._apply_hardware_assignment))
+                self.statusBar().showMessage(f"Assigned {get_product(type_id).name} to {cabinet.cabinet_id}; BOM unchanged")
+                return
+            else:
+                self.plan_view.begin_product_placement(type_id)
+            self.workspace_tabs.setCurrentIndex(0)
+            self.statusBar().showMessage(f"Place {get_catalogue_item(type_id).name if library == FURNITURE else get_product(type_id).name} in the 2D plan; Esc cancels")
+        except ValueError as error:
+            self.statusBar().showMessage(str(error))
+
+    def _place_product(self, type_id: str, x: int, y: int) -> None:
+        definition = get_product(type_id)
+        product = PlacedProduct(self.project.next_product_id(definition.library), type_id, x, y,
+                                definition.elevation_z, definition.width, definition.depth, definition.height)
+        try:
+            self.project.add_product(product)
+        except ValueError as error:
+            self._show_placement_error(error)
+            return
+        self.selected_product_id = product.item_id
+        self.project.select_opening(None)
+        self.plan_view.cancel_interaction(emit_signal=False)
+        self._set_dirty(True)
+        self._load_opening_controls()
+        self.refresh_visuals(reset_camera=False)
+        self.statusBar().showMessage(f"Placed {product.item_id}: {definition.name}")
+
+    def move_product(self, item_id: str, x: int, y: int) -> None:
+        product = next((item for item in self.project.placed_products if item.item_id == item_id), None)
+        if product is None:
+            return
+        candidate = deepcopy(product)
+        candidate.position_x, candidate.position_y = x, y
+        try:
+            candidate.validate(self.project.room)
+        except ValueError as error:
+            self._show_placement_error(error)
+            return
+        product.position_x, product.position_y = x, y
+        self.selected_product_id = item_id
+        self._set_dirty(True)
+        self.refresh_visuals()
+
+    def _product_properties_changed(self, *_args) -> None:
+        if getattr(self, "_updating_product_controls", False) or self.selected_product_id is None:
+            return
+        product = next((item for item in self.project.placed_products if item.item_id == self.selected_product_id), None)
+        if product is None:
+            return
+        candidate = deepcopy(product)
+        candidate.position_x, candidate.position_y, candidate.elevation_z = (
+            self.product_x_spin.value(), self.product_y_spin.value(), self.product_z_spin.value())
+        candidate.width, candidate.depth, candidate.height = (
+            self.product_width_spin.value(), self.product_depth_spin.value(), self.product_height_spin.value())
+        if get_product(candidate.type_id).library == APPLIANCES:
+            candidate.commercial_treatment = self.product_commercial_combo.currentText()
+            candidate.manufacturing_treatment = self.product_manufacturing_combo.currentText()
+        try:
+            candidate.validate(self.project.room)
+        except ValueError as error:
+            self._show_placement_error(error)
+            self._load_product_controls()
+            return
+        product.__dict__.update(candidate.__dict__)
+        self._set_dirty(True)
+        self.placement_warning.hide()
+        self.refresh_visuals()
+
+    def remove_selected_product(self) -> None:
+        if self.selected_product_id is None:
+            return
+        self.project.remove_product(self.selected_product_id)
+        self.selected_product_id = None
+        self._set_dirty(True)
+        self._load_selected_controls()
+        self.refresh_visuals()
+
+    def remove_selected_hardware_assignment(self) -> None:
+        assignment_id = self.selected_hardware_assignment_id
+        if assignment_id is None:
+            self.statusBar().showMessage("Select a hardware assignment in the project tree first")
+            return
+        assignment = next(item for item in self.project.hardware_assignments if item.assignment_id == assignment_id)
+        self.undo_stack.push(HardwareAssignmentCommand(assignment, self._apply_hardware_assignment, add=False))
+
+    def _apply_hardware_assignment(self, assignment: HardwareAssignment, add: bool) -> None:
+        if add:
+            self.project.add_hardware_assignment(assignment)
+            self.selected_hardware_assignment_id = assignment.assignment_id
+        else:
+            self.project.hardware_assignments = [item for item in self.project.hardware_assignments
+                                                 if item.assignment_id != assignment.assignment_id]
+            self.selected_hardware_assignment_id = None
+        self._set_dirty(True)
+        self.refresh_visuals()
 
     def _selected_catalogue_type_id(self) -> str:
         current = self.catalogue_list.currentItem()
@@ -1224,12 +1531,14 @@ class MainWindow(QMainWindow):
         self.refresh_all(reset_camera=False)
         self.statusBar().showMessage(message)
 
-    def _apply_cabinet_removal(self, cabinet, index: int, remove: bool) -> None:
+    def _apply_cabinet_removal(self, cabinet, index: int, remove: bool,
+                               assignments: list[HardwareAssignment] | None = None) -> None:
         if remove:
             self.project.remove_cabinet(cabinet.cabinet_id)
             message = f"Removed cabinet {cabinet.cabinet_id}"
         else:
             self.project.restore_cabinet(cabinet, index)
+            self.project.hardware_assignments.extend(deepcopy(assignments or []))
             message = f"Restored cabinet {cabinet.cabinet_id}"
         self._set_dirty(True)
         self.refresh_all(reset_camera=False)
@@ -1281,7 +1590,8 @@ class MainWindow(QMainWindow):
                 index for index, item in enumerate(self.project.cabinets)
                 if item.cabinet_id == cabinet.cabinet_id
             )
-            self.undo_stack.push(RemoveCabinetCommand(cabinet, index, self._apply_cabinet_removal))
+            related = [item for item in self.project.hardware_assignments if item.cabinet_id == cabinet.cabinet_id]
+            self.undo_stack.push(RemoveCabinetCommand(cabinet, index, self._apply_cabinet_removal, related))
         except ValueError as error:
             self.statusBar().showMessage(str(error))
 
