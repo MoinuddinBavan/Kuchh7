@@ -1,0 +1,143 @@
+{
+  "schema_version": 8,
+  "name": "Synthetic cabinet validation",
+  "project_type": "Kitchen",
+  "room": {
+    "width": 3600,
+    "depth": 3200,
+    "height": 2600,
+    "walls": [
+      {
+        "wall_id": "NORTH",
+        "label": "North / front wall"
+      },
+      {
+        "wall_id": "EAST",
+        "label": "East / right wall"
+      },
+      {
+        "wall_id": "SOUTH",
+        "label": "South / cabinet wall"
+      },
+      {
+        "wall_id": "WEST",
+        "label": "West / left wall"
+      }
+    ],
+    "openings": [
+      {
+        "opening_id": "D1",
+        "kind": "door",
+        "wall_id": "WEST",
+        "offset": 500,
+        "width": 900,
+        "height": 2100,
+        "elevation": 0,
+        "swing": "Left In"
+      },
+      {
+        "opening_id": "W1",
+        "kind": "window",
+        "wall_id": "WEST",
+        "offset": 1500,
+        "width": 900,
+        "height": 900,
+        "elevation": 1050,
+        "swing": "Left In"
+      }
+    ]
+  },
+  "cabinets": [
+    {
+      "width": 900,
+      "height": 720,
+      "depth": 600,
+      "board_thickness": 18,
+      "door_count": 2,
+      "drawer_count": 0,
+      "shelf_count": 1,
+      "material": "Cashmere",
+      "cabinet_id": "C1",
+      "position_x": 650,
+      "position_y": 2600,
+      "cabinet_type_id": "base_2_door",
+      "elevation_z": 0,
+      "orientation_degrees": 0
+    }
+  ],
+  "selected_cabinet_id": "C1",
+  "selected_opening_id": null,
+  "placed_products": [],
+  "hardware_assignments": [],
+  "quotation": {
+    "customer_name": "Synthetic customer",
+    "quotation_number": "SYN-001",
+    "quotation_date": "2026-11-19",
+    "discount_percent": "10",
+    "tax_percent": "5",
+    "unit_prices": {},
+    "billable_product_ids": [],
+    "currency": "INR",
+    "pricing_rules": {
+      "C1": {
+        "mode": "calculated",
+        "approved": true,
+        "fixed_price": "",
+        "markup_percent": "20",
+        "gross_margin_percent": "",
+        "charge_quantities": {}
+      }
+    },
+    "issued_snapshot": null
+  },
+  "price_master": {
+    "schema_version": 1,
+    "records": [
+      {
+        "record_id": "SYN-BOARD-18",
+        "category": "Board",
+        "match_key": "Cashmere",
+        "description": "Synthetic board",
+        "unit": "m2",
+        "rate": "100",
+        "currency": "INR",
+        "effective_date": "2026-01-01",
+        "status": "approved",
+        "thickness_mm": "18",
+        "sheet_length_mm": "2440",
+        "sheet_width_mm": "1220",
+        "specification": "SYNTHETIC test board specification"
+      },
+      {
+        "record_id": "SYN-BACK-6",
+        "category": "Board",
+        "match_key": "Cashmere",
+        "description": "Synthetic back",
+        "unit": "m2",
+        "rate": "80",
+        "currency": "INR",
+        "effective_date": "2026-01-01",
+        "status": "approved",
+        "thickness_mm": "6",
+        "sheet_length_mm": "",
+        "sheet_width_mm": "",
+        "specification": "SYNTHETIC test back specification"
+      },
+      {
+        "record_id": "SYN-HINGE",
+        "category": "Hardware",
+        "match_key": "Concealed hinge",
+        "description": "Synthetic hinge",
+        "unit": "each",
+        "rate": "10",
+        "currency": "INR",
+        "effective_date": "2026-01-01",
+        "status": "approved",
+        "thickness_mm": "",
+        "sheet_length_mm": "",
+        "sheet_width_mm": "",
+        "specification": ""
+      }
+    ]
+  }
+}

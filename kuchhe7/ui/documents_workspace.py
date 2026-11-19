@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 
 from ..bom import generate_project_bom
 from ..document_exports import (export_bom_pdf, export_bom_template_xlsx,
+                                 export_issued_quotation_pdf, export_issued_quotation_xlsx,
                                  export_quotation_pdf, export_quotation_xlsx)
 from ..quotation import calculate_quotation
 from ..quotation import issue_quotation_snapshot
@@ -95,7 +96,7 @@ class DocumentsWorkspace(QWidget):
             form.addRow(label, widget)
             widget.editingFinished.connect(lambda key=key, widget=widget: self._update_field(key, widget))
         layout.addLayout(form)
-        layout.addWidget(QLabel("Enter demo selling prices manually; client approval is required. Appliances are excluded until marked billable. Props never appear here."))
+        layout.addWidget(QLabel("Manual, fixed and calculated draft prices require client review. Appliances are excluded until marked billable. Props never appear here."))
         self.quote_table = _read_only_table(["ID", "Item", "Category", "Qty", "Billable", "Unit price", "Line total", "Pricing mode"])
         quote_header = self.quote_table.horizontalHeader()
         quote_header.setStretchLastSection(False)
@@ -118,6 +119,12 @@ class DocumentsWorkspace(QWidget):
             button = QPushButton(label)
             button.clicked.connect(callback)
             actions.addWidget(button)
+        self.issued_excel_button = QPushButton("Export issued Excel")
+        self.issued_excel_button.clicked.connect(self.export_issued_quote_excel)
+        actions.addWidget(self.issued_excel_button)
+        self.issued_pdf_button = QPushButton("Export issued PDF")
+        self.issued_pdf_button.clicked.connect(self.export_issued_quote_pdf)
+        actions.addWidget(self.issued_pdf_button)
         actions.addStretch()
         issue_button = QPushButton("Record issued snapshot…")
         issue_button.clicked.connect(self._issue_snapshot)
@@ -177,7 +184,7 @@ class DocumentsWorkspace(QWidget):
                 self.quote_table.setItem(row, 6, QTableWidgetItem(str(line.total) if line.total is not None else "—"))
                 self.quote_table.setItem(row, 7, QTableWidgetItem(line.pricing_mode.title()))
             self.totals_label.setText(
-                f"Subtotal {summary.subtotal}    Discount {summary.discount}    "
+                f"LIVE DRAFT — Subtotal {summary.subtotal}    Discount {summary.discount}    "
                 f"Tax {summary.tax}    Total {summary.total}"
             )
             self.warning_label.setText(
@@ -191,6 +198,8 @@ class DocumentsWorkspace(QWidget):
             self.issued_label.setText(
                 f"Issued snapshot {snapshot['quotation_number']}: {snapshot['total']} {snapshot.get('currency', '')} — frozen"
                 if snapshot else "No issued quotation snapshot. Draft values remain live.")
+            self.issued_excel_button.setEnabled(snapshot is not None)
+            self.issued_pdf_button.setEnabled(snapshot is not None)
             self.pricing_workspace.refresh()
         finally:
             self._loading = False
@@ -280,11 +289,20 @@ class DocumentsWorkspace(QWidget):
     def export_quote_pdf(self) -> None:
         self._export("Quotation", "pdf", export_quotation_pdf)
 
+    def export_issued_quote_excel(self) -> None:
+        self._export("Issued Quotation", "xlsx", export_issued_quotation_xlsx)
+
+    def export_issued_quote_pdf(self) -> None:
+        self._export("Issued Quotation", "pdf", export_issued_quotation_pdf)
+
     def _issue_snapshot(self) -> None:
         if self.project is None:
             return
+        replacing = self.project.quotation.issued_snapshot is not None
+        prompt = ("Replace the existing issued snapshot with the current complete draft?"
+                  if replacing else "Freeze the current complete quotation as an issued snapshot?")
         if QMessageBox.question(self, "Record issued quotation snapshot",
-                                "Freeze the current complete quotation as an issued snapshot? Future edits will change only the draft.",
+                                prompt + " Future edits will change only the draft.",
                                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                 QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
             return

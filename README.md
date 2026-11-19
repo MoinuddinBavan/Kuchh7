@@ -1,5 +1,12 @@
 # kuchhe7 Client Approval Demo v1.0.1
 
+## Stage 7B.2 cabinet validation preparation
+
+Use the [cabinet validation guide](docs/STAGE7B2_CABINET_VALIDATION.md) to compare
+saved projects with explicit synthetic or client-approved reference files. The
+quotation workspace now distinguishes live draft exports from frozen issued
+snapshot exports. No cabinet construction formula was changed in this stage.
+
 ## Stage 7B.1 draft costing
 
 The existing **BOM & Quotation** workspace now includes **Price Master** and

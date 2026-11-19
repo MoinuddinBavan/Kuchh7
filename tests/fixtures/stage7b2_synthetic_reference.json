@@ -1,0 +1,49 @@
+{
+  "reference_id": "SYNTHETIC-C1-2026-11-19",
+  "reference_status": "synthetic",
+  "source_document": "Synthetic automated-test fixture; not client approved",
+  "cabinet_id": "C1",
+  "nesting_settings": {"length_mm": 2440, "width_mm": 1220, "kerf_mm": 3, "margin_mm": 10, "allow_rotation": true, "grain_rotation_restricted": false},
+  "tolerances": {"nesting.utilization_percent": "0.01"},
+  "expected": {
+    "cabinet": {"width": 900, "height": 720, "depth": 600, "board_thickness": 18, "door_count": 2, "drawer_count": 0, "shelf_count": 1, "material": "Cashmere", "cabinet_type_id": "base_2_door"},
+    "components": [
+      {"name": "Left side panel", "length_mm": 720, "width_mm": 600, "thickness_mm": 18, "material": "Cashmere", "quantity": 1},
+      {"name": "Right side panel", "length_mm": 720, "width_mm": 600, "thickness_mm": 18, "material": "Cashmere", "quantity": 1},
+      {"name": "Top panel", "length_mm": 864, "width_mm": 600, "thickness_mm": 18, "material": "Cashmere", "quantity": 1},
+      {"name": "Bottom panel", "length_mm": 864, "width_mm": 600, "thickness_mm": 18, "material": "Cashmere", "quantity": 1},
+      {"name": "Back panel", "length_mm": 684, "width_mm": 864, "thickness_mm": 6, "material": "Cashmere", "quantity": 1},
+      {"name": "Shelf", "length_mm": 864, "width_mm": 580, "thickness_mm": 18, "material": "Cashmere", "quantity": 1},
+      {"name": "Door", "length_mm": 716, "width_mm": 447, "thickness_mm": 18, "material": "Cashmere", "quantity": 2},
+      {"name": "Concealed hinge", "length_mm": 0, "width_mm": 0, "thickness_mm": 0, "material": "Hardware", "quantity": 4}
+    ],
+    "hardware": {"Concealed hinge": 4},
+    "bom_totals": {"component_rows": 8, "panel_instances": 8, "hardware_instances": 4, "total_component_quantity": 12},
+    "material_specifications": {"Cashmere|6": "SYNTHETIC test back specification", "Cashmere|18": "SYNTHETIC test board specification"},
+    "cost": {
+      "status": "COMPLETE", "currency": "INR", "total": "391.48", "missing": [],
+      "lines": [
+        {"component": "Left side panel", "source_id": "SYN-BOARD-18", "quantity": "0.432", "amount": "43.20"},
+        {"component": "Right side panel", "source_id": "SYN-BOARD-18", "quantity": "0.432", "amount": "43.20"},
+        {"component": "Top panel", "source_id": "SYN-BOARD-18", "quantity": "0.5184", "amount": "51.84"},
+        {"component": "Bottom panel", "source_id": "SYN-BOARD-18", "quantity": "0.5184", "amount": "51.84"},
+        {"component": "Back panel", "source_id": "SYN-BACK-6", "quantity": "0.590976", "amount": "47.28"},
+        {"component": "Shelf", "source_id": "SYN-BOARD-18", "quantity": "0.50112", "amount": "50.11"},
+        {"component": "Door", "source_id": "SYN-BOARD-18", "quantity": "0.640104", "amount": "64.01"},
+        {"component": "Concealed hinge", "source_id": "SYN-HINGE", "quantity": "4", "amount": "40.00"}
+      ]
+    },
+    "selling_price": {"pricing_mode": "calculated", "unit_price": "469.78"},
+    "quotation": {"subtotal": "469.78", "discount": "46.98", "taxable_amount": "422.80", "tax": "21.14", "total": "443.94", "unpriced_ids": []},
+    "nesting": {"eligible_count": 8, "placed_count": 8, "unplaced_count": 0, "sheet_count": 3, "total_panel_area_mm2": 3633000, "utilization_percent": 40.68},
+    "drawing": {"type": "panel_outlines", "insunits": 4,
+      "front_elevation": {"insunits": 4, "outline_count": 1, "width_mm": 900, "height_mm": 720},
+      "panel_rectangles": [
+      {"length_mm": 720, "width_mm": 600, "quantity": 2},
+      {"length_mm": 864, "width_mm": 600, "quantity": 2},
+      {"length_mm": 684, "width_mm": 864, "quantity": 1},
+      {"length_mm": 864, "width_mm": 580, "quantity": 1},
+      {"length_mm": 716, "width_mm": 447, "quantity": 2}
+    ]}
+  }
+}

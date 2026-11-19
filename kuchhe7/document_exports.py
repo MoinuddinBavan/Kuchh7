@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 
 from .bom import generate_project_bom
-from .quotation import calculate_quotation
+from .quotation import calculate_quotation, get_issued_quotation_snapshot
 
 NAVY = "172A3C"
 TEAL = "147D83"
@@ -97,6 +98,43 @@ def export_quotation_xlsx(project, path: str | Path) -> Path:
         for cell in cells:
             cell.number_format = '#,##0.00'
             cell.alignment = Alignment(horizontal="right")
+    sheet.freeze_panes = "A6"
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    workbook.save(destination)
+    return destination
+
+
+def export_issued_quotation_xlsx(project, path: str | Path) -> Path:
+    """Export stored issue-time values without recalculating the live draft."""
+    snapshot = get_issued_quotation_snapshot(project)
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Issued Quotation"
+    sheet.append(["KÜCHE7 ISSUED QUOTATION SNAPSHOT — frozen demonstration record"])
+    sheet.append(["Project", snapshot.get("project_name", "Not captured in legacy snapshot"),
+                  "Customer", snapshot["customer_name"]])
+    sheet.append(["Quote no.", snapshot["quotation_number"], "Date", snapshot["quotation_date"]])
+    sheet.append(["Currency", snapshot["currency"]])
+    sheet.append(["ID", "Sellable item", "Category", "Qty", "Unit price", "Line total", "Status", "Pricing mode"])
+    for line in snapshot["lines"]:
+        sheet.append([line["item_id"], line["description"], line.get("category", "Not captured"),
+                      int(line["quantity"]), float(line["unit_price"]), float(line["total"]),
+                      "Issued", line["pricing_mode"]])
+    row = sheet.max_row + 2
+    for label, value in (("Subtotal", snapshot["subtotal"]), ("Discount", snapshot["discount"]),
+                         ("After discount", snapshot.get("taxable_amount", str(
+                             Decimal(snapshot["subtotal"]) - Decimal(snapshot["discount"])))),
+                         ("Tax", snapshot["tax"]), ("Total", snapshot["total"])):
+        sheet.cell(row, 5, label)
+        sheet.cell(row, 6, float(value)).number_format = '#,##0.00'
+        row += 1
+    sheet.cell(row + 1, 1, "Issued snapshot values; not recalculated from current cabinet or price data.")
+    for cell in sheet[5]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor=TEAL)
+    for column, width in zip("ABCDEFGH", (15, 32, 24, 10, 18, 18, 30, 18)):
+        sheet.column_dimensions[column].width = width
     sheet.freeze_panes = "A6"
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -225,3 +263,18 @@ def export_quotation_pdf(project, path: str | Path) -> Path:
     return _pdf(path, "KÜCHE7 | CUSTOMER QUOTATION",
                 f"{project.name}  /  {data.customer_name or 'Customer pending'}  /  {data.quotation_number or 'No number'}  /  {data.quotation_date}",
                 ("ID", "Item", "Category", "Qty", "Unit price", "Total", "Mode / status"), rows, footer)
+
+
+def export_issued_quotation_pdf(project, path: str | Path) -> Path:
+    """Render an issued snapshot only; the current draft is deliberately ignored."""
+    snapshot = get_issued_quotation_snapshot(project)
+    rows = [(str(line["item_id"]), str(line["description"]), str(line.get("category", "Not captured")),
+             str(line["quantity"]), str(line["unit_price"]), str(line["total"]),
+             str(line["pricing_mode"]).title()) for line in snapshot["lines"]]
+    footer = [f"Subtotal: {snapshot['subtotal']}", f"Discount: {snapshot['discount']}",
+              f"Tax: {snapshot['tax']}", f"TOTAL: {snapshot['total']} {snapshot['currency']}",
+              "Issued snapshot values — not recalculated from current project data."]
+    return _pdf(path, "KÜCHE7 | ISSUED QUOTATION SNAPSHOT",
+                f"{snapshot.get('project_name', 'Project not captured')}  /  {snapshot['customer_name']}  /  "
+                f"{snapshot['quotation_number']}  /  {snapshot['quotation_date']}",
+                ("ID", "Item", "Category", "Qty", "Unit price", "Total", "Mode"), rows, footer)
