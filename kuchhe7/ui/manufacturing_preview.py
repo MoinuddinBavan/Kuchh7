@@ -207,6 +207,7 @@ class ExplodedCabinetView(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self.plotter = QtInteractor(self)
+        self._plotter_closed = False
         self.plotter.set_background("#F5F7F8", top="#DCE5EA")
         self.plotter.enable_anti_aliasing("ssaa")
         layout.addWidget(self.plotter.interactor)
@@ -348,8 +349,14 @@ class ExplodedCabinetView(QWidget):
             actor.GetProperty().SetLineWidth(2.6)
         self.plotter.render()
 
+    def close_plotter(self) -> None:
+        """Finalize the hidden exploded view before Qt destroys its surface."""
+        if not self._plotter_closed:
+            self._plotter_closed = True
+            self.plotter.close()
+
     def closeEvent(self, event) -> None:  # noqa: N802
-        self.plotter.close()
+        self.close_plotter()
         super().closeEvent(event)
 
 

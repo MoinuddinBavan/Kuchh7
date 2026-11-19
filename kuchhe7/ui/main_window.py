@@ -119,13 +119,19 @@ class CompanyPriceSetupDialog(QDialog):
 
 
 class MainWindow(QMainWindow):
+    def close_3d_views(self) -> None:
+        """Finalize both VTK widgets while their Qt surfaces are still alive."""
+        if hasattr(self, "manufacturing_preview"):
+            self.manufacturing_preview.exploded_view.close_plotter()
+        if hasattr(self, "view3d"):
+            self.view3d.close_plotter()
+
     def closeEvent(self, event) -> None:  # noqa: N802
         if hasattr(self, "realistic_render_workspace") and self.realistic_render_workspace.render_in_progress:
             event.ignore()
             self.statusBar().showMessage("Rendering request is still running. Close the application after it finishes.")
             return
-        if hasattr(self, "view3d"):
-            self.view3d.close_plotter()
+        self.close_3d_views()
         super().closeEvent(event)
 
     def __init__(self, *, start_empty: bool = True) -> None:
