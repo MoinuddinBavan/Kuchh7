@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import os
 from copy import deepcopy
+from datetime import datetime, timezone
 from pathlib import Path
 
 from PySide6.QtCore import QStandardPaths
 
 from .price_master import (PriceMaster, load_price_master, save_price_master,
                            validate_company_price_setup)
+from .pricing_refresh import approved_company_master, latest_effective_date, master_revision
 
 
 def company_price_setup_path() -> Path:
@@ -38,9 +40,15 @@ def save_company_price_setup(master: PriceMaster, path: str | Path | None = None
 
 def apply_company_setup_to_new_project(project, master: PriceMaster) -> None:
     """Explicitly seed a new project; never mutate the company setup object."""
-    master.validate()
-    project.price_master = deepcopy(master)
-    currencies = {row.currency for row in master.records if row.status == "approved"}
-    currencies.update(row.currency for row in master.catalogue_rules if row.status == "approved")
+    approved = approved_company_master(master)
+    project.price_master = deepcopy(approved)
+    currencies = {row.currency for row in approved.records}
+    currencies.update(row.currency for row in approved.catalogue_rules)
     if len(currencies) == 1:
         project.quotation.currency = next(iter(currencies))
+    project.pricing_revision = {
+        "source": "company_price_setup",
+        "revision": master_revision(approved),
+        "latest_effective_date": latest_effective_date(approved),
+        "applied_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }

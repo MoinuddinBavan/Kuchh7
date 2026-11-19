@@ -239,6 +239,7 @@ class Project:
     hardware_assignments: list[HardwareAssignment] = field(default_factory=list)
     quotation: QuotationData = field(default_factory=QuotationData)
     price_master: PriceMaster = field(default_factory=PriceMaster)
+    pricing_revision: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not isinstance(self.quotation, QuotationData):
@@ -495,6 +496,7 @@ class Project:
             "hardware_assignments": [asdict(item) for item in self.hardware_assignments],
             "quotation": asdict(self.quotation),
             "price_master": self.price_master.to_dict(),
+            "pricing_revision": dict(self.pricing_revision),
         }
 
     @classmethod
@@ -530,6 +532,7 @@ class Project:
             hardware_assignments=[HardwareAssignment(**item) for item in data.get("hardware_assignments", [])],
             quotation=QuotationData(**data.get("quotation", {})),
             price_master=PriceMaster.from_dict(data.get("price_master", {})),
+            pricing_revision=dict(data.get("pricing_revision", {})),
         )
         project.validate()
         return project

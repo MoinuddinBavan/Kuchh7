@@ -33,7 +33,7 @@ def _read_only_table(headers: list[str]) -> QTableWidget:
 
 
 class DocumentsWorkspace(QWidget):
-    def __init__(self, on_change, parent=None) -> None:
+    def __init__(self, on_change, parent=None, *, on_company_refresh=None) -> None:
         super().__init__(parent)
         self.project = None
         self._on_change = on_change
@@ -47,7 +47,8 @@ class DocumentsWorkspace(QWidget):
         outer.addWidget(self.tabs)
         self._build_bom()
         self._build_quote()
-        self.pricing_workspace = PricingWorkspace(lambda: (on_change(), self.refresh()))
+        self.pricing_workspace = PricingWorkspace(lambda: (on_change(), self.refresh()),
+                                                  on_company_refresh=on_company_refresh)
         self.tabs.addTab(self.pricing_workspace.master_page, "Price Setup")
         self.tabs.addTab(self.pricing_workspace.cost_page, "Cost Breakdown")
 

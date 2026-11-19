@@ -1,5 +1,12 @@
 # kuchhe7 Client Approval Demo v1.0.1
 
+## Stage 7B.4 reviewed company price refresh
+
+Existing projects can compare current and approved company prices before an
+explicit refresh. The [Stage 7B.4 guide](docs/STAGE7B4_PRICING_REFRESH.md)
+covers revisions, manual exceptions, frozen issued quotations and the synthetic
+Windows walkthrough.
+
 ## Stage 7B.3 catalogue-first pricing
 
 Configure the local company Price Setup before creating a project. New projects

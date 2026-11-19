@@ -14,15 +14,17 @@ from ..costing import PricingRule, cost_cabinet, selling_price
 from ..price_master import (CATEGORIES, UNITS, CataloguePriceRule, PriceRecord,
                             load_price_master, save_price_master)
 from ..quotation import resolve_cabinet_pricing_rule
+from ..pricing_refresh import master_revision
 
 
 class PricingWorkspace:
     """Two pages managed by DocumentsWorkspace; all mutations mark the project dirty."""
 
-    def __init__(self, on_change, *, context_name: str = "project") -> None:
+    def __init__(self, on_change, *, context_name: str = "project", on_company_refresh=None) -> None:
         self.project = None
         self._on_change = on_change
         self.context_name = context_name
+        self.on_company_refresh = on_company_refresh
         self.master_page = QTabWidget()
         self.rates_page = QWidget()
         self.cost_page = QWidget()
@@ -33,6 +35,8 @@ class PricingWorkspace:
     def _build_master(self) -> None:
         layout = QVBoxLayout(self.rates_page)
         layout.addWidget(QLabel("No rates are supplied by default. Enter or import rates; approval is user-declared and requires client validation."))
+        self.revision_label = QLabel()
+        layout.addWidget(self.revision_label)
         self.master_table = QTableWidget(0, 11)
         self.master_table.setHorizontalHeaderLabels(
             ["ID", "Category", "Match key", "Description", "Rate unit", "Rate", "Currency", "Effective", "Status", "Purchase unit", "Selling unit"])
@@ -78,6 +82,10 @@ class PricingWorkspace:
                                 ("Save master JSON", self.export_master)):
             button = QPushButton(label); button.clicked.connect(callback); buttons.addWidget(button)
         layout.addLayout(buttons)
+        if self.on_company_refresh is not None:
+            refresh_button = QPushButton("Review latest company prices for this project…")
+            refresh_button.clicked.connect(self.on_company_refresh)
+            layout.addWidget(refresh_button)
         self.master_message = QLabel("Board costing uses approved m2 rates by material and thickness; hardware uses approved each rates.")
         layout.addWidget(self.master_message)
         self.master_page.addTab(self.rates_page, "Material & product rates")
@@ -180,6 +188,14 @@ class PricingWorkspace:
     def refresh(self) -> None:
         if self.project is None:
             return
+        revision = self.project.pricing_revision
+        if revision.get("revision"):
+            modified = " — modified in this project since refresh" if master_revision(self.project.price_master) != revision["revision"] else ""
+            self.revision_label.setText(
+                f"Company revision {revision['revision']} · latest effective {revision.get('latest_effective_date') or 'none'}"
+                f" · applied {revision.get('applied_at_utc', 'date not recorded')}{modified}")
+        else:
+            self.revision_label.setText("No company pricing revision recorded for this project.")
         selected_id = self.record_id.text().strip()
         self.master_table.blockSignals(True)
         self.master_table.setRowCount(len(self.project.price_master.records))

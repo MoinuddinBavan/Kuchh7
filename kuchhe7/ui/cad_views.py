@@ -255,27 +255,43 @@ class RoomPlanView(QGraphicsView):
                 x = cabinet.width * index / divisions
                 scene.addLine(QLineF(plan_point(x, 0), plan_point(x, min(10 / scale, cabinet.depth))), QPen(QColor("#FFFFFF"), 1.2))
             compact_names = {
-                "base_2_door": "2-DOOR BASE",
-                "base_3_drawer": "3-DRAWER BASE",
-                "sink_base": "SINK BASE",
-                "wall_2_door": "WALL CABINET",
-                "wall_open_shelf": "OPEN WALL SHELF",
-                "tall_pantry": "TALL PANTRY",
+                "base_2_door": "BASE", "base_3_drawer": "DRAWERS",
+                "base_4_drawer": "DRAWERS", "sink_base": "SINK",
+                "open_shelf_base": "SHELF", "corner_base": "CORNER",
+                "wall_2_door": "WALL", "wall_lift_up": "WALL",
+                "wall_open_shelf": "SHELF", "corner_wall": "CORNER",
+                "tall_pantry": "PANTRY", "oven_tall": "OVEN",
+                "utility_tall": "UTILITY", "vanity_base": "VANITY",
+                "vanity_drawer": "VANITY", "wardrobe_2_door": "WARDROBE",
+                "wardrobe_open": "WARDROBE",
             }
-            plan_name = compact_names.get(cabinet.cabinet_type_id, catalogue_item.name.upper())
-            label = scene.addText(
-                f"{cabinet.cabinet_id} • {plan_name}\n{cabinet.width} × {cabinet.depth} mm",
-                QFont("Segoe UI", 7, QFont.Weight.DemiBold),
-            )
+            plan_name = compact_names.get(cabinet.cabinet_type_id, "CABINET")
+            is_wall = catalogue_item.category == "Wall Cabinets"
+            stacked = any(
+                (get_catalogue_item(other.cabinet_type_id).category == "Wall Cabinets") != is_wall
+                and other.position_x < cabinet.position_x + cabinet.footprint_width
+                and cabinet.position_x < other.position_x + other.footprint_width
+                and other.position_y < cabinet.position_y + cabinet.footprint_depth
+                and cabinet.position_y < other.position_y + other.footprint_depth
+                for other in cabinets if other.cabinet_id != cabinet.cabinet_id)
+            label_font = QFont("Segoe UI", 7, QFont.Weight.DemiBold)
+            label = scene.addText(f"{cabinet.cabinet_id} {plan_name}", label_font)
+            if not stacked:
+                label.setPlainText(f"{cabinet.cabinet_id} {plan_name}\n{cabinet.width} × {cabinet.depth} mm")
+            if label.boundingRect().width() > max(1, cw - 6):
+                label.setPlainText(f"{cabinet.cabinet_id} {plan_name}")
+            if label.boundingRect().width() > max(1, cw - 6):
+                label.setPlainText(cabinet.cabinet_id)
+            label.setToolTip(f"{cabinet.cabinet_id} · {catalogue_item.name}\n"
+                             f"{cabinet.width} × {cabinet.height} × {cabinet.depth} mm")
             label.setData(0, cabinet.cabinet_id)
             label.setDefaultTextColor(QColor("#0B4E52") if selected else QColor("#172A3C"))
             label.setZValue(30)
-            if catalogue_item.category == "Wall Cabinets":
-                # Keep stacked wall/base footprints legible with a callout just
-                # beyond the back-wall footprint instead of overlaying the base.
-                label.setPos(cabinet_x + 6, cabinet_y + cd + 4)
-            else:
-                label.setPos(cabinet_x + 6, cabinet_y + 5)
+            if label.boundingRect().height() > max(1, cd - 6):
+                label.setPlainText(cabinet.cabinet_id)
+            label_y = (cabinet_y + cd - label.boundingRect().height() - 3
+                       if stacked and not is_wall else cabinet_y + 3)
+            label.setPos(cabinet_x + 3, label_y)
 
         for product in self._products:
             definition = get_product(product.type_id)
@@ -763,6 +779,7 @@ class Cabinet3DView(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self.plotter = QtInteractor(self)
+        self._plotter_closed = False
         self.plotter.set_background("#F3F6F8", top="#DDE6EC")
         self.plotter.enable_anti_aliasing("ssaa")
         layout.addWidget(self.plotter.interactor)
@@ -1510,6 +1527,12 @@ class Cabinet3DView(QWidget):
         else:
             self.view_isometric()
 
+    def close_plotter(self) -> None:
+        """Release VTK/Qt resources while QApplication is still alive."""
+        if not self._plotter_closed:
+            self._plotter_closed = True
+            self.plotter.close()
+
     def closeEvent(self, event) -> None:  # noqa: N802
-        self.plotter.close()
+        self.close_plotter()
         super().closeEvent(event)

@@ -110,6 +110,7 @@ def main() -> int:
     application.setFont(QFont(font_family, 9))
     application.setStyleSheet(STYLE.replace("'Segoe UI'", f"'{font_family}'"))
     window = MainWindow()
+    application.aboutToQuit.connect(window.view3d.close_plotter)
     window.show()
     release_smoke_directory = os.environ.get("KUCHHE7_RELEASE_SMOKE_DIR")
     if release_smoke_directory:

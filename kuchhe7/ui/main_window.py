@@ -53,6 +53,7 @@ from ..openings import DOOR_SWINGS, WALL_IDS, WALL_LABELS, wall_length
 from ..persistence import load_project, save_project
 from ..pricing_setup import (apply_company_setup_to_new_project,
                              load_company_price_setup, save_company_price_setup)
+from ..pricing_refresh import apply_company_price_refresh, preview_company_price_refresh
 from ..rendering import capture_view_png
 from ..platform_support import is_macos, platform_shortcut
 from .cad_views import Cabinet3DView, RoomPlanView
@@ -60,6 +61,7 @@ from .ai_design_workspace import AIDesignWorkspace
 from .catalogue_preview import catalogue_thumbnail, product_thumbnail
 from .documents_workspace import DocumentsWorkspace
 from .pricing_workspace import PricingWorkspace
+from .pricing_refresh_dialog import PricingRefreshDialog
 from .engineering_export_dialog import EngineeringExportDialog
 from .history import AddCabinetCommand, ApplyDesignProposalCommand, HardwareAssignmentCommand, MoveCabinetCommand, OpeningChangeCommand, ProductChangeCommand, RemoveCabinetCommand
 from .manufacturing_preview import ManufacturingPreviewWidget
@@ -119,6 +121,8 @@ class MainWindow(QMainWindow):
             event.ignore()
             self.statusBar().showMessage("Rendering request is still running. Close the application after it finishes.")
             return
+        if hasattr(self, "view3d"):
+            self.view3d.close_plotter()
         super().closeEvent(event)
 
     def __init__(self, *, start_empty: bool = True) -> None:
@@ -219,6 +223,7 @@ class MainWindow(QMainWindow):
         )
         self.documents_action = QAction("BOM & Quotation", self, triggered=self.show_documents)
         self.price_setup_action = QAction("Company Price Setup…", self, triggered=self.show_company_price_setup)
+        self.price_refresh_action = QAction("Review Company Price Refresh…", self, triggered=self.refresh_company_prices)
         self.realistic_render_action = QAction("Realistic Rendering", self, triggered=self.show_realistic_rendering)
         self.front_view_action = QAction("Front", self, triggered=lambda: self.view3d.view_front())
         self.isometric_view_action = QAction("Isometric", self, triggered=lambda: self.view3d.view_isometric())
@@ -326,6 +331,7 @@ class MainWindow(QMainWindow):
         manufacturing_menu.addAction(self.sheet_nesting_action)
         manufacturing_menu.addAction(self.documents_action)
         manufacturing_menu.addAction(self.price_setup_action)
+        manufacturing_menu.addAction(self.price_refresh_action)
         manufacturing_menu.addSeparator()
         manufacturing_menu.addActions([self.export_xlsx_action, self.export_dxf_action])
         manufacturing_menu.addAction(self.engineering_export_action)
@@ -449,7 +455,8 @@ class MainWindow(QMainWindow):
         self.manufacturing_preview.set_cabinet(self.project.selected_cabinet)
         self.sheet_nesting = SheetNestingWidget()
         self.sheet_nesting.set_project(self.project)
-        self.documents_workspace = DocumentsWorkspace(lambda: self._set_dirty(True))
+        self.documents_workspace = DocumentsWorkspace(lambda: self._set_dirty(True),
+                                                      on_company_refresh=self.refresh_company_prices)
         self.documents_workspace.set_project(self.project)
         self.ai_design_workspace = AIDesignWorkspace(
             self.generate_design_proposal, self.apply_design_proposal, self.reject_design_proposal
@@ -934,6 +941,26 @@ class MainWindow(QMainWindow):
             return
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.statusBar().showMessage("Company Price Setup saved locally; new projects use a copy. Existing projects remain unchanged.")
+
+    def refresh_company_prices(self) -> None:
+        try:
+            preview = preview_company_price_refresh(self.project, load_company_price_setup())
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, "Company Price Refresh", str(error))
+            return
+        dialog = PricingRefreshDialog(preview, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            self.statusBar().showMessage("Company price refresh cancelled; project pricing unchanged")
+            return
+        try:
+            apply_company_price_refresh(self.project, preview)
+        except ValueError as error:
+            QMessageBox.warning(self, "Company Price Refresh", str(error))
+            return
+        self._set_dirty(True)
+        self.refresh_all()
+        self.statusBar().showMessage(
+            f"Applied company pricing revision {preview.source_revision}; draft recalculated, issued snapshot preserved")
 
     def show_ai_design(self) -> None:
         self.workspace_tabs.setCurrentWidget(self.ai_design_workspace)
