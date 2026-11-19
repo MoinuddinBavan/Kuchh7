@@ -28,6 +28,8 @@ STYLES = (
 )
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
 OPENAI_IMAGE_EDIT_URL = "https://api.openai.com/v1/images/edits"
+GEMINI_INTERACTIONS_URL = "https://generativelanguage.googleapis.com/v1beta/interactions"
+GEMINI_IMAGE_MODELS = ("gemini-nano-banana-2.1", "gemini-3.1-flash-image")
 OPENAI_IMAGE_MODELS = ("gpt-image-2.5-sunburst", "gpt-image-2.5-flare", "gpt-image-2.6-sunburst", "gpt-image-2.6-flare")
 OPENAI_IMAGE_QUALITIES = ("low", "medium", "high")
 OPENAI_IMAGE_SIZES = ("1024x1024", "1536x1024", "1024x1536")
@@ -233,13 +235,95 @@ class OpenAIImageEditProvider:
             raise RuntimeError("OpenAI returned an invalid or oversized PNG image response.") from error
 
 
-def configured_image_provider() -> ImageRenderProvider | None:
-    choice = os.environ.get("KUCHE7_RENDER_PROVIDER", "").strip().lower()
-    if choice not in ("", "openai", "custom"):
-        raise ValueError("KUCHE7_RENDER_PROVIDER must be openai or custom.")
+class GeminiImageEditProvider:
+    """Gemini Interactions image edit; only the captured PNG and prompt leave the app."""
+
+    def __init__(self, api_key: str, *, model: str = "gemini-nano-banana-2.1",
+                 timeout_seconds: float = 90) -> None:
+        if not api_key.strip():
+            raise ValueError("Gemini API key is not configured.")
+        if model not in GEMINI_IMAGE_MODELS:
+            raise ValueError("Unsupported Gemini image-editing model.")
+        if timeout_seconds <= 0:
+            raise ValueError("Gemini timeout must be positive.")
+        self.api_key = api_key.strip()
+        self.model = model
+        self.timeout_seconds = timeout_seconds
+        self.name = f"Gemini image edit ({model})"
+
+    def render(self, request: RenderRequest) -> bytes:
+        request.validate()
+        payload = json.dumps({
+            "model": self.model,
+            "input": [
+                {"type": "text", "text": realistic_edit_prompt(request)},
+                {"type": "image", "mime_type": "image/png",
+                 "data": base64.b64encode(request.source_png).decode("ascii")},
+            ],
+        }).encode("utf-8")
+        http_request = Request(
+            GEMINI_INTERACTIONS_URL, data=payload,
+            headers={"Content-Type": "application/json", "x-goog-api-key": self.api_key,
+                     "Api-Revision": "2026-05-20"},
+            method="POST",
+        )
+        try:
+            with urlopen(http_request, timeout=self.timeout_seconds) as response:
+                raw = response.read(MAX_PROVIDER_RESPONSE_BYTES + 1)
+            if len(raw) > MAX_PROVIDER_RESPONSE_BYTES:
+                raise ValueError("Gemini response exceeds the presentation image limit.")
+            result = json.loads(raw)
+            interaction = result.get("interaction", result)
+            output = interaction.get("output_image") or interaction.get("outputImage")
+            if not output:
+                for step in interaction.get("steps", []):
+                    if step.get("type") == "model_output":
+                        output = next((item for item in step.get("content", [])
+                                       if item.get("type") == "image"), None)
+                        if output:
+                            break
+            image_data = base64.b64decode(output["data"], validate=True)
+            if len(image_data) > MAX_IMAGE_BYTES:
+                raise ValueError("Gemini image exceeds the presentation image limit.")
+            with Image.open(io.BytesIO(image_data)) as image:
+                if image.format not in ("PNG", "JPEG", "WEBP"):
+                    raise ValueError("Unsupported Gemini image format.")
+                if image.width > 4096 or image.height > 4096 or image.width * image.height > 16_000_000:
+                    raise ValueError("Gemini image dimensions exceed the presentation image limit.")
+                png = io.BytesIO()
+                image.convert("RGB").save(png, format="PNG")
+            image_data = png.getvalue()
+            validate_png(image_data)
+            return image_data
+        except HTTPError as error:
+            if error.code in (401, 403):
+                raise RuntimeError("Gemini authentication or model access failed. Check the API key and permissions.") from error
+            if error.code == 429:
+                raise RuntimeError("Gemini rate or usage limit reached. Retry later or check usage controls.") from error
+            raise RuntimeError(f"Gemini image edit failed (HTTP {error.code}).") from error
+        except (TimeoutError, socket.timeout) as error:
+            raise RuntimeError("Gemini image edit timed out. Retry the request.") from error
+        except URLError as error:
+            if isinstance(error.reason, (TimeoutError, socket.timeout)):
+                raise RuntimeError("Gemini image edit timed out. Retry the request.") from error
+            raise RuntimeError("Gemini network connection failed. Check connectivity and retry.") from error
+        except (ValueError, KeyError, IndexError, TypeError, OSError, AttributeError) as error:
+            raise RuntimeError("Gemini returned an invalid or oversized image response.") from error
+
+
+def configured_image_provider(choice: str | None = None) -> ImageRenderProvider | None:
+    choice = (choice if choice is not None else os.environ.get("KUCHE7_RENDER_PROVIDER", "")).strip().lower()
+    if choice not in ("", "openai", "gemini", "custom"):
+        raise ValueError("KUCHE7_RENDER_PROVIDER must be openai, gemini or custom.")
     endpoint = os.environ.get("KUCHE7_RENDER_ENDPOINT", "").strip()
     if choice == "custom" or (not choice and endpoint):
         return HttpJsonImageProvider(endpoint, os.environ.get("KUCHE7_RENDER_API_KEY", "")) if endpoint else None
+    gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if choice == "gemini" or (not choice and gemini_key and not os.environ.get("OPENAI_API_KEY", "").strip()):
+        return GeminiImageEditProvider(
+            gemini_key,
+            model=os.environ.get("KUCHE7_GEMINI_IMAGE_MODEL", "gemini-nano-banana-2.1").strip(),
+        ) if gemini_key else None
     api_key = os.environ.get("OPENAI_API_KEY", "").strip()
     if not api_key:
         return None

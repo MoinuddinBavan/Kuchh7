@@ -51,12 +51,18 @@ class RealisticRenderWorkspace(QWidget):
         options = QFormLayout()
         self.camera_combo = QComboBox()
         self.camera_combo.addItems(("Current", "Front", "Isometric", "Presentation"))
+        self.provider_combo = QComboBox()
+        self.provider_combo.addItem("Automatic / configured", "")
+        self.provider_combo.addItem("Google Gemini", "gemini")
+        self.provider_combo.addItem("OpenAI", "openai")
+        self.provider_combo.currentIndexChanged.connect(lambda _index: self.refresh_provider_status())
         self.style_combo = QComboBox()
         self.style_combo.addItems(STYLES)
         self.instructions = QPlainTextEdit()
         self.instructions.setPlaceholderText("Optional visual instructions for an approved image provider")
         self.instructions.setMaximumHeight(68)
         options.addRow("Camera", self.camera_combo)
+        options.addRow("AI provider", self.provider_combo)
         options.addRow("Rendering style", self.style_combo)
         options.addRow("Presentation instructions", self.instructions)
         outer.addLayout(options)
@@ -105,7 +111,7 @@ class RealisticRenderWorkspace(QWidget):
 
     def refresh_provider_status(self, *, preserve_message: bool = False) -> None:
         try:
-            provider = configured_image_provider()
+            provider = self._selected_provider()
         except ValueError as error:
             provider = None
             if not preserve_message:
@@ -117,6 +123,10 @@ class RealisticRenderWorkspace(QWidget):
                     if provider else "No live AI provider configured. 3D capture and PNG saving are available."
                 )
         self.generate_button.setEnabled(provider is not None and self.source_png is not None and self._thread is None)
+
+    def _selected_provider(self):
+        choice = self.provider_combo.currentData()
+        return configured_image_provider(choice) if choice else configured_image_provider()
 
     def _show_image(self, label: QLabel, data: bytes) -> None:
         pixmap = QPixmap()
@@ -169,7 +179,7 @@ class RealisticRenderWorkspace(QWidget):
             self.status_label.setText("Project changed since capture. Capture the current 3D scene again.")
             return False
         try:
-            provider = configured_image_provider()
+            provider = self._selected_provider()
             if provider is None:
                 self.refresh_provider_status()
                 return False
@@ -202,6 +212,7 @@ class RealisticRenderWorkspace(QWidget):
         self._thread.finished.connect(self._worker_cleared)
         self.generate_button.setEnabled(False)
         self.capture_button.setEnabled(False)
+        self.provider_combo.setEnabled(False)
         self.status_label.setText(f"{provider.name} is rendering… You can continue using the application.")
         self._thread.start()
         return True
@@ -227,6 +238,7 @@ class RealisticRenderWorkspace(QWidget):
         self._worker = None
         self._thread = None
         self.capture_button.setEnabled(True)
+        self.provider_combo.setEnabled(True)
         self.refresh_provider_status(preserve_message=True)
 
     def save_image(self) -> bool:
