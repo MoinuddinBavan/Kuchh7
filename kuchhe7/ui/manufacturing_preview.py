@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QGraphicsScene,
     QGraphicsView,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -158,7 +159,7 @@ class DrillingPreviewView(QGraphicsView):
         panel_x, panel_y, panel_w, panel_h = 180.0, 82.0, 390.0, 330.0
         panel = scene.addRect(panel_x, panel_y, panel_w, panel_h, QPen(QColor("#172A3C"), 2.4))
         panel.setBrush(QColor("#F2EFE9"))
-        scene.addText("REFERENCE EDGE", QFont("Segoe UI", 8, QFont.Weight.Bold)).setPos(panel_x - 105, panel_y + 120)
+        scene.addText("REFERENCE EDGE", QFont("Segoe UI", 11, QFont.Weight.Bold)).setPos(panel_x - 130, panel_y + 120)
         reference = scene.addLine(panel_x, panel_y, panel_x, panel_y + panel_h, QPen(QColor("#147D83"), 5))
         reference.setZValue(2)
 
@@ -176,7 +177,7 @@ class DrillingPreviewView(QGraphicsView):
             radius = max(4.0, params.hole_diameter_mm * 0.9)
             hole = scene.addEllipse(panel_x + offset_x - radius, cy - radius, radius * 2, radius * 2, hole_pen)
             hole.setBrush(QColor("#E9B8B2"))
-            hole_label = scene.addText(f"H{index + 1}  Ø{params.hole_diameter_mm}", QFont("Segoe UI", 8))
+            hole_label = scene.addText(f"H{index + 1}  Ø{params.hole_diameter_mm}", QFont("Segoe UI", 12))
             hole_label.setDefaultTextColor(QColor("#8A281F"))
             hole_label.setPos(panel_x + offset_x + 13, cy - 10)
 
@@ -185,12 +186,12 @@ class DrillingPreviewView(QGraphicsView):
         scene.addLine(panel_x, dimension_y, panel_x + offset_x, dimension_y, dimension_pen)
         scene.addLine(panel_x, dimension_y - 7, panel_x, dimension_y + 7, dimension_pen)
         scene.addLine(panel_x + offset_x, dimension_y - 7, panel_x + offset_x, dimension_y + 7, dimension_pen)
-        offset_label = scene.addText(f"Edge offset {params.edge_offset_mm} mm", QFont("Segoe UI", 9, QFont.Weight.DemiBold))
+        offset_label = scene.addText(f"Edge offset {params.edge_offset_mm} mm", QFont("Segoe UI", 11, QFont.Weight.DemiBold))
         offset_label.setDefaultTextColor(QColor("#0E6267"))
         offset_label.setPos(panel_x + 8, dimension_y + 4)
         panel_label = scene.addText(
             f"Example on {component.name}  •  {component.length_mm:g} × {component.width_mm:g} × {component.thickness_mm:g} mm",
-            QFont("Segoe UI", 9, QFont.Weight.DemiBold),
+            QFont("Segoe UI", 11, QFont.Weight.DemiBold),
         )
         panel_label.setDefaultTextColor(QColor("#425466"))
         panel_label.setPos(180, 54)
@@ -437,15 +438,21 @@ class ManufacturingPreviewWidget(QWidget):
         drilling_page = QWidget()
         drilling_layout = QVBoxLayout(drilling_page)
         drilling_controls = QGroupBox("Configurable example parameters")
-        drilling_form = QFormLayout(drilling_controls)
+        drilling_form = QGridLayout(drilling_controls)
         self.hole_diameter_spin = self._parameter_spin(2, 35, 5, " mm")
         self.edge_offset_spin = self._parameter_spin(10, 200, 37, " mm")
         self.hole_pitch_spin = self._parameter_spin(32, 500, 96, " mm")
         self.hole_count_spin = self._parameter_spin(1, 12, 4, "")
-        drilling_form.addRow("Hole diameter", self.hole_diameter_spin)
-        drilling_form.addRow("Reference edge offset", self.edge_offset_spin)
-        drilling_form.addRow("Hole pitch", self.hole_pitch_spin)
-        drilling_form.addRow("Hole count", self.hole_count_spin)
+        for row, column, label, spin in (
+            (0, 0, "Hole diameter", self.hole_diameter_spin),
+            (0, 2, "Edge offset", self.edge_offset_spin),
+            (1, 0, "Hole pitch", self.hole_pitch_spin),
+            (1, 2, "Hole count", self.hole_count_spin),
+        ):
+            drilling_form.addWidget(QLabel(label), row, column)
+            drilling_form.addWidget(spin, row, column + 1)
+        drilling_form.setColumnStretch(1, 1)
+        drilling_form.setColumnStretch(3, 1)
         self.drilling_view = DrillingPreviewView()
         drilling_layout.addWidget(drilling_controls)
         drilling_layout.addWidget(self.drilling_view, 1)
