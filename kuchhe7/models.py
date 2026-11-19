@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
-from .catalogue import FINISHES, LEGACY_FINISH_ALIASES, get_catalogue_item, normalized_finish
+from .catalogue import FINISHES, LEGACY_FINISH_ALIASES, get_catalogue_item, normalized_finish, register_custom_items, catalogue_item_from_dict, CatalogueItem
 from .openings import DOOR_SWINGS, OPENING_KINDS, WALL_IDS, opening_error, opening_furniture_conflict, wall_length
 from .placement import placement_error, product_placement_error, volumes_intersect
 from .product_libraries import APPEARANCE_COLOURS, APPLIANCES, HARDWARE, PROPS, get_product
@@ -149,6 +149,12 @@ class Cabinet:
         if self.material not in (*MATERIALS, *LEGACY_FINISH_ALIASES):
             raise ValueError(f"Unsupported material: {self.material}")
         catalogue_item = get_catalogue_item(self.cabinet_type_id)
+        if catalogue_item.product_id and not (
+            catalogue_item.min_width <= self.width <= catalogue_item.max_width
+            and catalogue_item.min_height <= self.height <= catalogue_item.max_height
+            and catalogue_item.min_depth <= self.depth <= catalogue_item.max_depth
+        ):
+            raise ValueError(f"Cabinet dimensions are outside supported range for {catalogue_item.name}.")
         if normalized_finish(self.material) not in catalogue_item.supported_finishes:
             raise ValueError(f"{self.material} is not supported by {catalogue_item.name}.")
         if not self.cabinet_id.strip():
@@ -240,8 +246,12 @@ class Project:
     quotation: QuotationData = field(default_factory=QuotationData)
     price_master: PriceMaster = field(default_factory=PriceMaster)
     pricing_revision: dict[str, str] = field(default_factory=dict)
+    custom_catalogue: list[CatalogueItem] = field(default_factory=list)
 
     def __post_init__(self) -> None:
+        self.custom_catalogue = [item if isinstance(item, CatalogueItem) else catalogue_item_from_dict(item)
+                                 for item in self.custom_catalogue]
+        register_custom_items(self.custom_catalogue)
         if not isinstance(self.quotation, QuotationData):
             self.quotation = QuotationData(**self.quotation)
         if not isinstance(self.price_master, PriceMaster):
@@ -497,10 +507,16 @@ class Project:
             "quotation": asdict(self.quotation),
             "price_master": self.price_master.to_dict(),
             "pricing_revision": dict(self.pricing_revision),
+            "custom_catalogue": [asdict(item) for item in self.custom_catalogue],
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Project":
+        custom_catalogue = [catalogue_item_from_dict(item) for item in data.get("custom_catalogue", [])]
+        from .custom_catalogue import validate_custom_item
+        for item in custom_catalogue:
+            validate_custom_item(item)
+        register_custom_items(custom_catalogue)
         room_data = dict(data["room"])
         room_data.setdefault("height", 2600)
         room_data.setdefault("walls", _default_walls())
@@ -533,6 +549,7 @@ class Project:
             quotation=QuotationData(**data.get("quotation", {})),
             price_master=PriceMaster.from_dict(data.get("price_master", {})),
             pricing_revision=dict(data.get("pricing_revision", {})),
+            custom_catalogue=custom_catalogue,
         )
         project.validate()
         return project

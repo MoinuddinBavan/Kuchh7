@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 FINISHES = (
@@ -23,6 +23,13 @@ def normalized_finish(finish: str) -> str:
     return LEGACY_FINISH_ALIASES.get(finish, finish)
 
 
+def catalogue_item_from_dict(data: dict) -> "CatalogueItem":
+    values = dict(data)
+    if "supported_finishes" in values:
+        values["supported_finishes"] = tuple(values["supported_finishes"])
+    return CatalogueItem(**values)
+
+
 @dataclass(frozen=True)
 class CatalogueItem:
     type_id: str
@@ -38,6 +45,17 @@ class CatalogueItem:
     front_style: str = "doors"
     elevation_z: int = 0
     supported_finishes: tuple[str, ...] = FINISHES
+    product_id: str = ""
+    template_id: str = ""
+    revision: int = 0
+    default_finish: str = ""
+    min_width: int = 300
+    max_width: int = 3000
+    min_height: int = 300
+    max_height: int = 3000
+    min_depth: int = 200
+    max_depth: int = 1200
+    hardware_defaults: dict[str, int] = field(default_factory=dict)
 
 
 CATALOGUE = (
@@ -67,21 +85,66 @@ WARDROBE_CATALOGUE = (
     CatalogueItem("wardrobe_open", "Wardrobe", "Open Wardrobe Shelves", 900, 2100, 550, shelf_count=5, front_style="open"),
 )
 FURNITURE_FAMILIES = ("Kitchen", "Wardrobe", "Vanity")
+_CUSTOM_BY_ID: dict[str, CatalogueItem] = {}
+_COMPANY_CUSTOM_IDS: set[str] = set()
+
+
+def register_custom_items(items: tuple[CatalogueItem, ...] | list[CatalogueItem], *, company: bool = False) -> None:
+    """Register immutable custom revisions for lookup by saved projects."""
+    for item in items:
+        if not item.product_id or not item.template_id or item.revision < 1:
+            raise ValueError("Custom cabinet requires product ID, template and revision.")
+        if item.type_id in CATALOGUE_BY_ID or item.type_id in {row.type_id for row in WARDROBE_CATALOGUE}:
+            raise ValueError(f"Custom cabinet ID conflicts with a built-in model: {item.type_id}")
+        prior = _CUSTOM_BY_ID.get(item.type_id)
+        if prior is not None and prior != item:
+            raise ValueError(f"Custom cabinet revision {item.type_id} has changed; use a new revision.")
+        _CUSTOM_BY_ID[item.type_id] = item
+        if company:
+            _COMPANY_CUSTOM_IDS.add(item.type_id)
+
+
+def custom_items() -> tuple[CatalogueItem, ...]:
+    return tuple(_CUSTOM_BY_ID.values())
+
+
+def set_company_custom_items(items: list[CatalogueItem]) -> None:
+    register_custom_items(items)
+    _COMPANY_CUSTOM_IDS.clear()
+    _COMPANY_CUSTOM_IDS.update(item.type_id for item in items)
+
+
+def unregister_custom_item(type_id: str) -> None:
+    """Discard an unsaved new revision after a failed local save."""
+    _CUSTOM_BY_ID.pop(type_id, None)
+    _COMPANY_CUSTOM_IDS.discard(type_id)
+
+
+def current_custom_items() -> tuple[CatalogueItem, ...]:
+    latest: dict[str, CatalogueItem] = {}
+    for item in _CUSTOM_BY_ID.values():
+        if item.type_id not in _COMPANY_CUSTOM_IDS:
+            continue
+        if item.product_id not in latest or item.revision > latest[item.product_id].revision:
+            latest[item.product_id] = item
+    return tuple(sorted(latest.values(), key=lambda item: (item.category, item.name)))
 
 
 def furniture_items(family: str) -> tuple[CatalogueItem, ...]:
     if family == "Kitchen":
-        return tuple(item for item in CATALOGUE if item.category != "Vanity")
+        return tuple(item for item in CATALOGUE if item.category != "Vanity") + tuple(
+            item for item in current_custom_items() if item.category not in ("Vanity", "Wardrobe"))
     if family == "Wardrobe":
-        return WARDROBE_CATALOGUE
+        return WARDROBE_CATALOGUE + tuple(item for item in current_custom_items() if item.category == "Wardrobe")
     if family == "Vanity":
-        return tuple(item for item in CATALOGUE if item.category == "Vanity")
+        return tuple(item for item in CATALOGUE if item.category == "Vanity") + tuple(
+            item for item in current_custom_items() if item.category == "Vanity")
     raise ValueError(f"Unsupported furniture family: {family}")
 
 
 def get_catalogue_item(type_id: str) -> CatalogueItem:
     try:
-        return {**CATALOGUE_BY_ID, **{item.type_id: item for item in WARDROBE_CATALOGUE}}[type_id]
+        return {**CATALOGUE_BY_ID, **{item.type_id: item for item in WARDROBE_CATALOGUE}, **_CUSTOM_BY_ID}[type_id]
     except KeyError as error:
         raise ValueError(f"Unsupported cabinet type: {type_id}") from error
 
@@ -104,7 +167,7 @@ def create_catalogue_cabinet(type_id: str, cabinet_id: str, *, position_x: int =
         door_count=item.door_count,
         drawer_count=item.drawer_count,
         shelf_count=item.shelf_count,
-        material=item.supported_finishes[0],
+        material=item.default_finish or item.supported_finishes[0],
         cabinet_id=cabinet_id,
         cabinet_type_id=item.type_id,
         position_x=position_x,

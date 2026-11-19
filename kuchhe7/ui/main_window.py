@@ -44,7 +44,8 @@ from PySide6.QtWidgets import (
 from ..bom import generate_project_bom
 from ..ai_design import (DesignProposal, LocalRuleBasedProvider, build_proposal,
                          configured_provider, project_fingerprint)
-from ..catalogue import CATEGORIES, FURNITURE_FAMILIES, catalogue_items, create_catalogue_cabinet, furniture_items, get_catalogue_item
+from ..catalogue import CATEGORIES, FURNITURE_FAMILIES, catalogue_items, create_catalogue_cabinet, furniture_items, get_catalogue_item, register_custom_items, unregister_custom_item
+from ..custom_catalogue import load_custom_catalogue, save_custom_catalogue
 from ..exports import export_bom_xlsx, export_front_elevation_dxf
 from ..engineering_dxf import CNC_PROTOTYPE, DRAWING_LABELS, export_engineering_dxf
 from ..models import MATERIALS, MAX_CABINETS, PROJECT_TYPES, HardwareAssignment, Opening, PlacedProduct, Project
@@ -54,11 +55,13 @@ from ..persistence import load_project, save_project
 from ..pricing_setup import (apply_company_setup_to_new_project,
                              load_company_price_setup, save_company_price_setup)
 from ..pricing_refresh import apply_company_price_refresh, preview_company_price_refresh
+from ..price_master import validate_company_price_setup
 from ..rendering import capture_view_png
 from ..platform_support import is_macos, platform_shortcut
 from .cad_views import Cabinet3DView, RoomPlanView
 from .ai_design_workspace import AIDesignWorkspace
 from .catalogue_preview import catalogue_thumbnail, product_thumbnail
+from .cabinet_library_dialog import CabinetLibraryDialog
 from .documents_workspace import DocumentsWorkspace
 from .pricing_workspace import PricingWorkspace
 from .pricing_refresh_dialog import PricingRefreshDialog
@@ -127,6 +130,12 @@ class MainWindow(QMainWindow):
 
     def __init__(self, *, start_empty: bool = True) -> None:
         super().__init__()
+        try:
+            self.custom_library_items = load_custom_catalogue()
+            self.custom_library_error = ""
+        except (OSError, ValueError, TypeError) as error:
+            self.custom_library_items = []
+            self.custom_library_error = str(error)
         self.project = Project.empty() if start_empty else Project()
         self.project_path: Path | None = None
         self.selected_product_id: str | None = None
@@ -157,6 +166,10 @@ class MainWindow(QMainWindow):
         self.resizeDocks([self.explorer_dock, self.properties_dock], [330, 365], Qt.Orientation.Horizontal)
         self.resizeDocks([self.bom_dock], [245], Qt.Orientation.Vertical)
         self.statusBar().showMessage("Ready — demonstration construction rules are not factory approved")
+        if self.custom_library_error:
+            self.statusBar().showMessage(f"Custom cabinet library could not be read: {self.custom_library_error}")
+            self.library_create_button.setEnabled(False)
+            self.library_edit_button.setEnabled(False)
         self.refresh_all(reset_camera=True)
 
     def _build_actions(self) -> None:
@@ -530,6 +543,11 @@ class MainWindow(QMainWindow):
         self.hardware_quantity_label = QLabel("Assignment quantity (demo metadata)")
         self.library_add_button = QPushButton("Place selected product in 2D")
         self.library_add_button.setObjectName("primaryButton")
+        self.library_create_button = QPushButton("Add Cabinet…")
+        self.library_edit_button = QPushButton("Edit Cabinet…")
+        library_manage = QHBoxLayout()
+        library_manage.addWidget(self.library_create_button)
+        library_manage.addWidget(self.library_edit_button)
         self.library_remove_hardware_button = QPushButton("Remove selected hardware assignment")
         self.library_remove_hardware_button.hide()
         library_layout.addWidget(QLabel("PRODUCT LIBRARY"))
@@ -541,6 +559,7 @@ class MainWindow(QMainWindow):
         library_layout.addWidget(self.hardware_quantity_label)
         library_layout.addWidget(self.hardware_quantity_spin)
         library_layout.addWidget(self.library_add_button)
+        library_layout.addLayout(library_manage)
         library_layout.addWidget(self.library_remove_hardware_button)
         self.library_page = library_page
         self.explorer_tabs.addTab(library_page, "Libraries")
@@ -561,6 +580,8 @@ class MainWindow(QMainWindow):
         )
         self.library_list.currentItemChanged.connect(self._library_selection_changed)
         self.library_add_button.clicked.connect(self.begin_library_placement)
+        self.library_create_button.clicked.connect(self.create_library_cabinet)
+        self.library_edit_button.clicked.connect(self.edit_library_cabinet)
         self.library_remove_hardware_button.clicked.connect(self.remove_selected_hardware_assignment)
         self.library_list.itemDoubleClicked.connect(lambda _item: self.begin_library_placement())
         self._populate_product_library()
@@ -595,6 +616,8 @@ class MainWindow(QMainWindow):
             self.library_list.setCurrentRow(0)
         self.library_add_button.setText("Assign to selected cabinet" if library == HARDWARE else "Place selected product in 2D")
         self.library_remove_hardware_button.setVisible(library == HARDWARE)
+        self.library_create_button.setVisible(library == FURNITURE)
+        self.library_edit_button.setVisible(library == FURNITURE)
         self.hardware_quantity_spin.setVisible(library == HARDWARE)
         self.hardware_quantity_label.setVisible(library == HARDWARE)
 
@@ -610,8 +633,59 @@ class MainWindow(QMainWindow):
         elif library == APPLIANCES:
             note = "Sample product · commercial and manufacturing treatment requires client approval."
         else:
-            note = "Furniture uses existing illustrative cabinet construction rules."
+            definition = get_catalogue_item(current.data(Qt.ItemDataRole.UserRole))
+            note = (f"Product {definition.product_id} · revision {definition.revision}. "
+                    "Pricing is saved in Company Price Setup; existing projects keep their snapshots."
+                    if definition.product_id else
+                    "Furniture uses existing illustrative cabinet construction rules.")
         self.library_description.setText(note)
+
+    def create_library_cabinet(self) -> None:
+        self._edit_library_cabinet(None)
+
+    def edit_library_cabinet(self) -> None:
+        current = self.library_list.currentItem()
+        if self.library_combo.currentText() != FURNITURE or current is None:
+            QMessageBox.information(self, "Cabinet library", "Select a furniture cabinet first.")
+            return
+        self._edit_library_cabinet(get_catalogue_item(current.data(Qt.ItemDataRole.UserRole)))
+
+    def _edit_library_cabinet(self, selected) -> None:
+        item = None
+        try:
+            if self.custom_library_error:
+                raise ValueError(f"Resolve the library file error before editing: {self.custom_library_error}")
+            company = load_company_price_setup()
+            previous_rule = next((rule for rule in company.catalogue_rules
+                                  if selected and rule.type_id == selected.type_id), None)
+            dialog = CabinetLibraryDialog(self.custom_library_items, company, selected, previous_rule, self)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            item, rule = dialog.build()
+            register_custom_items([item])
+            updated_company = deepcopy(company)
+            updated_company.catalogue_rules.append(rule)
+            validate_company_price_setup(updated_company)
+            try:
+                save_custom_catalogue([*self.custom_library_items, item])
+                save_company_price_setup(updated_company)
+            except (OSError, ValueError):
+                save_custom_catalogue(self.custom_library_items)
+                unregister_custom_item(item.type_id)
+                raise
+            self.custom_library_items.append(item)
+            self._populate_product_library()
+            for row in range(self.library_list.count()):
+                if self.library_list.item(row).data(Qt.ItemDataRole.UserRole) == item.type_id:
+                    self.library_list.setCurrentRow(row)
+                    break
+            self.statusBar().showMessage(
+                f"Saved {item.product_id} revision {item.revision} with a {rule.status} Price Master rule. New projects copy it; existing projects remain unchanged."
+            )
+        except (OSError, ValueError, TypeError) as error:
+            if item is not None and all(existing.type_id != item.type_id for existing in self.custom_library_items):
+                unregister_custom_item(item.type_id)
+            QMessageBox.warning(self, "Cabinet library", str(error))
 
     def _populate_catalogue(self, *_args) -> None:
         self.catalogue_list.clear()
@@ -1664,6 +1738,9 @@ class MainWindow(QMainWindow):
             if library == FURNITURE:
                 if len(self.project.cabinets) >= MAX_CABINETS:
                     raise ValueError(f"This demo supports a maximum of {MAX_CABINETS} cabinets.")
+                item = get_catalogue_item(type_id)
+                if item.product_id and not any(rule.type_id == type_id for rule in self.project.price_master.catalogue_rules):
+                    raise ValueError("This existing project lacks this cabinet's Price Master snapshot. Review Company Price Refresh before placing it.")
                 self.plan_view.begin_placement(type_id)
             elif library == HARDWARE:
                 cabinet = self.project.selected_cabinet
@@ -1863,6 +1940,13 @@ class MainWindow(QMainWindow):
     def _apply_cabinet_addition(self, cabinet, add: bool) -> None:
         if add:
             self.project.add_cabinet(cabinet)
+            definition = get_catalogue_item(cabinet.cabinet_type_id)
+            if definition.product_id:
+                if not any(item.type_id == definition.type_id for item in self.project.custom_catalogue):
+                    self.project.custom_catalogue.append(definition)
+                for type_id, quantity in definition.hardware_defaults.items():
+                    self.project.add_hardware_assignment(HardwareAssignment(
+                        self.project.next_assignment_id(), cabinet.cabinet_id, type_id, quantity))
             message = f"Placed {cabinet.cabinet_id} at X {cabinet.position_x} mm, Y {cabinet.position_y} mm"
         else:
             self.project.remove_cabinet(cabinet.cabinet_id)
@@ -1976,6 +2060,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Invalid project", "Please enter a project name.")
                 return
             self.project = Project.empty(name=name, project_type=dialog.type_combo.currentText())
+            self.project.custom_catalogue = list(self.custom_library_items)
             try:
                 apply_company_setup_to_new_project(self.project, load_company_price_setup())
             except (OSError, ValueError) as error:

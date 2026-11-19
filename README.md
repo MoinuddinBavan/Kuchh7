@@ -461,3 +461,19 @@ schedules, cutting sequences or CNC code.
 Projects saved with the v0.4 names White Matte, Cashmere / Greige Matte, and
 Graphite Grey continue to open and retain their selected finish appearance.
 
+### Custom cabinet library (Stage 9)
+
+Open **Libraries → Furniture → Add Cabinet…** to create a user-managed model from
+an existing illustrative construction template. Enter dimensions and limits on
+**Details**, then configure fixed or calculated selling price on **Pricing**.
+The preview lists the matched approved Company Price Setup rate IDs and marks
+missing rates `INCOMPLETE`. **Edit Cabinet…** creates a new revision; older
+projects keep their saved model and pricing snapshots. Built-in definitions are
+never changed. New kitchen projects copy approved company prices. Existing
+projects use the reviewed Company Price Refresh before placing a newly priced
+model that is absent from their snapshot.
+
+The library is stored in the local application-data directory. For disposable
+testing, set `KUCHE7_CABINET_LIBRARY_PATH` to another JSON path. See
+`docs/STAGE9_CABINET_LIBRARY.md` for test results and current limitations.
+
