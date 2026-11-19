@@ -51,12 +51,15 @@ from ..models import MATERIALS, MAX_CABINETS, PROJECT_TYPES, HardwareAssignment,
 from ..product_libraries import APPEARANCE_COLOURS, APPLIANCES, FURNITURE, HARDWARE, LIBRARIES, PROPS, get_product, products_for
 from ..openings import DOOR_SWINGS, WALL_IDS, WALL_LABELS, wall_length
 from ..persistence import load_project, save_project
+from ..pricing_setup import (apply_company_setup_to_new_project,
+                             load_company_price_setup, save_company_price_setup)
 from ..rendering import capture_view_png
 from ..platform_support import is_macos, platform_shortcut
 from .cad_views import Cabinet3DView, RoomPlanView
 from .ai_design_workspace import AIDesignWorkspace
 from .catalogue_preview import catalogue_thumbnail, product_thumbnail
 from .documents_workspace import DocumentsWorkspace
+from .pricing_workspace import PricingWorkspace
 from .engineering_export_dialog import EngineeringExportDialog
 from .history import AddCabinetCommand, ApplyDesignProposalCommand, HardwareAssignmentCommand, MoveCabinetCommand, OpeningChangeCommand, ProductChangeCommand, RemoveCabinetCommand
 from .manufacturing_preview import ManufacturingPreviewWidget
@@ -78,6 +81,36 @@ class NewProjectDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addRow(buttons)
+
+
+class CompanyPriceSetupDialog(QDialog):
+    """Edit the local company master before design; saving never reprices open projects."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Company Price Setup")
+        self.resize(1120, 850)
+        self.project = Project.empty(name="Company price setup")
+        self.project.price_master = load_company_price_setup()
+        layout = QVBoxLayout(self)
+        note = QLabel("Configure rates and catalogue selling rules before design. Existing projects keep their saved pricing snapshots. No prices are supplied by KÜCHE7.")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        self.workspace = PricingWorkspace(lambda: None, context_name="company setup")
+        self.workspace.set_project(self.project)
+        layout.addWidget(self.workspace.master_page)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.save_setup)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def save_setup(self) -> None:
+        try:
+            save_company_price_setup(self.project.price_master)
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, "Company Price Setup", str(error))
+            return
+        self.accept()
 
 
 class MainWindow(QMainWindow):
@@ -185,6 +218,7 @@ class MainWindow(QMainWindow):
             "Open the BOM-driven demonstration sheet nesting workspace"
         )
         self.documents_action = QAction("BOM & Quotation", self, triggered=self.show_documents)
+        self.price_setup_action = QAction("Company Price Setup…", self, triggered=self.show_company_price_setup)
         self.realistic_render_action = QAction("Realistic Rendering", self, triggered=self.show_realistic_rendering)
         self.front_view_action = QAction("Front", self, triggered=lambda: self.view3d.view_front())
         self.isometric_view_action = QAction("Isometric", self, triggered=lambda: self.view3d.view_isometric())
@@ -291,6 +325,7 @@ class MainWindow(QMainWindow):
         manufacturing_menu.addAction(self.manufacturing_preview_action)
         manufacturing_menu.addAction(self.sheet_nesting_action)
         manufacturing_menu.addAction(self.documents_action)
+        manufacturing_menu.addAction(self.price_setup_action)
         manufacturing_menu.addSeparator()
         manufacturing_menu.addActions([self.export_xlsx_action, self.export_dxf_action])
         manufacturing_menu.addAction(self.engineering_export_action)
@@ -889,7 +924,16 @@ class MainWindow(QMainWindow):
     def show_documents(self) -> None:
         self.documents_workspace.set_project(self.project)
         self.workspace_tabs.setCurrentWidget(self.documents_workspace)
-        self.statusBar().showMessage("Review illustrative BOM, then prepare a quotation with manually entered prices")
+        self.statusBar().showMessage("Review illustrative BOM and automatically resolved draft prices; incomplete pricing is flagged")
+
+    def show_company_price_setup(self) -> None:
+        try:
+            dialog = CompanyPriceSetupDialog(self)
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, "Company Price Setup", str(error))
+            return
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.statusBar().showMessage("Company Price Setup saved locally; new projects use a copy. Existing projects remain unchanged.")
 
     def show_ai_design(self) -> None:
         self.workspace_tabs.setCurrentWidget(self.ai_design_workspace)
@@ -1019,7 +1063,7 @@ class MainWindow(QMainWindow):
                 )
             elif documents_active:
                 self.documents_workspace.set_project(self.project)
-                self.statusBar().showMessage("BOM and quotation review — illustrative quantities and manual prices")
+                self.statusBar().showMessage("BOM and quotation review — illustrative quantities and resolved draft prices")
             elif design_assistant_active:
                 self.statusBar().showMessage("Design Assistant — local proposal preview; project unchanged")
             elif rendering_active:
@@ -1905,6 +1949,10 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Invalid project", "Please enter a project name.")
                 return
             self.project = Project.empty(name=name, project_type=dialog.type_combo.currentText())
+            try:
+                apply_company_setup_to_new_project(self.project, load_company_price_setup())
+            except (OSError, ValueError) as error:
+                QMessageBox.warning(self, "Company Price Setup", f"New project created without company prices: {error}")
             self.selected_wall_id = "WEST"
             self.project_path = None
             self.undo_stack.clear()

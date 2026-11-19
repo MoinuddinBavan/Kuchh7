@@ -50,6 +50,8 @@ class CostLine:
     amount: Decimal
     currency: str
     calculation: str
+    match_key: str = ""
+    specification: str = ""
 
 
 @dataclass(frozen=True)
@@ -92,7 +94,7 @@ def cost_cabinet(cabinet, master: PriceMaster, *, hardware_assignments=(),
         rate = nonnegative_decimal(record.rate, f"Rate {record.record_id}")
         amount = (quantity * rate).quantize(MONEY, rounding=ROUND_HALF_UP)
         lines.append(CostLine(component, record.record_id, record.unit, quantity, rate, amount,
-                              record.currency, calculation))
+                              record.currency, calculation, record.match_key, record.specification))
 
     components = generate_bom(cabinet)
     automatic = {row.name: row.quantity for row in components if row.material == "Hardware"}

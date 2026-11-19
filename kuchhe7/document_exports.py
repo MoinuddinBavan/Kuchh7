@@ -64,7 +64,7 @@ def export_quotation_xlsx(project, path: str | Path) -> Path:
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Quotation"
-    sheet.append(["KÜCHE7 Customer Quotation — demonstration; prices entered by user"])
+    sheet.append(["KÜCHE7 DRAFT Customer Quotation — demonstration pricing; review required"])
     sheet.append(["Project", project.name, "Customer", data.customer_name])
     sheet.append(["Quote no.", data.quotation_number, "Date", data.quotation_date])
     sheet.append([])
@@ -260,7 +260,7 @@ def export_quotation_pdf(project, path: str | Path) -> Path:
     footer.extend("INCOMPLETE — " + reason for reason in summary.incomplete_reasons)
     footer.append("Draft currency: " + (data.currency or "not configured"))
     footer.append("Demonstration quotation; currency and commercial terms require client approval.")
-    return _pdf(path, "KÜCHE7 | CUSTOMER QUOTATION",
+    return _pdf(path, "KÜCHE7 | DRAFT CUSTOMER QUOTATION",
                 f"{project.name}  /  {data.customer_name or 'Customer pending'}  /  {data.quotation_number or 'No number'}  /  {data.quotation_date}",
                 ("ID", "Item", "Category", "Qty", "Unit price", "Total", "Mode / status"), rows, footer)
 

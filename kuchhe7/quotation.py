@@ -94,6 +94,23 @@ class QuoteSummary:
     incomplete_reasons: tuple[str, ...] = ()
 
 
+def resolve_cabinet_pricing_rule(project, cabinet) -> tuple[PricingRule | None, str]:
+    """Per-cabinet exception first; otherwise use the approved catalogue rule."""
+    override = project.quotation.pricing_rules.get(cabinet.cabinet_id)
+    if override is not None:
+        return override, f"Cabinet override ({cabinet.cabinet_id})"
+    if cabinet.cabinet_id in project.quotation.unit_prices:
+        return None, "Manual cabinet price exception"
+    source, reason = project.price_master.cabinet_rule(
+        cabinet, currency=project.quotation.currency, as_of=project.quotation.quotation_date)
+    if source is None:
+        return None, reason
+    return PricingRule(mode=source.mode, approved=True, fixed_price=source.fixed_price,
+                       markup_percent=source.markup_percent,
+                       gross_margin_percent=source.gross_margin_percent,
+                       charge_quantities=source.charge_quantities), f"Price Setup rule {source.rule_id}"
+
+
 def calculate_quotation(project: object) -> QuoteSummary:
     """Calculate a live draft; legacy manual prices are never overwritten."""
     settings = project.quotation
@@ -104,10 +121,14 @@ def calculate_quotation(project: object) -> QuoteSummary:
 
     def append(item_id: str, description: str, category: str, billable: bool,
                cabinet=None, product=None) -> None:
-        mode = "manual"
+        mode = "unconfigured"
         price = None
         if billable:
-            rule = settings.pricing_rules.get(item_id)
+            rule = None
+            if cabinet is not None:
+                rule, lookup_reason = resolve_cabinet_pricing_rule(project, cabinet)
+                if rule is None and project.price_master.catalogue_rules and item_id not in settings.unit_prices:
+                    incomplete.append(f"{item_id}: {lookup_reason}")
             if cabinet is not None and rule is not None and rule.mode != "manual":
                 mode = rule.mode
                 cost = cost_cabinet(cabinet, project.price_master,
@@ -121,6 +142,7 @@ def calculate_quotation(project: object) -> QuoteSummary:
                 incomplete.extend(f"{item_id}: {entry}" for entry in cost.missing if mode == "calculated")
             elif item_id in settings.unit_prices:
                 price = _decimal(settings.unit_prices[item_id], f"Unit price for {item_id}")
+                mode = "manual exception"
             elif product is not None:
                 record = project.price_master.approved("Appliance", product.type_id,
                                                        as_of=settings.quotation_date)

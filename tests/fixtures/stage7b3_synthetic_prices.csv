@@ -1,0 +1,5 @@
+record_id,category,match_key,description,unit,rate,currency,effective_date,status,thickness_mm,sheet_length_mm,sheet_width_mm,specification,purchase_unit,selling_unit
+SYN-BOARD-18,Board,Cashmere,SYNTHETIC 18 mm board,m2,100,INR,2026-01-01,approved,18,2440,1220,SYNTHETIC board specification,sheet,m2
+SYN-BACK-6,Board,Cashmere,SYNTHETIC 6 mm back,m2,80,INR,2026-01-01,approved,6,,,SYNTHETIC back specification,sheet,m2
+SYN-HINGE,Hardware,Concealed hinge,SYNTHETIC hinge,each,10,INR,2026-01-01,approved,,,,,each,each
+SYN-OVEN,Appliance,oven_freestanding,SYNTHETIC supplied oven,each,200,INR,2026-01-01,approved,,,,,each,each

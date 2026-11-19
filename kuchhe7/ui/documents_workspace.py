@@ -48,7 +48,7 @@ class DocumentsWorkspace(QWidget):
         self._build_bom()
         self._build_quote()
         self.pricing_workspace = PricingWorkspace(lambda: (on_change(), self.refresh()))
-        self.tabs.addTab(self.pricing_workspace.master_page, "Price Master")
+        self.tabs.addTab(self.pricing_workspace.master_page, "Price Setup")
         self.tabs.addTab(self.pricing_workspace.cost_page, "Cost Breakdown")
 
     def _build_bom(self) -> None:
@@ -96,7 +96,7 @@ class DocumentsWorkspace(QWidget):
             form.addRow(label, widget)
             widget.editingFinished.connect(lambda key=key, widget=widget: self._update_field(key, widget))
         layout.addLayout(form)
-        layout.addWidget(QLabel("Manual, fixed and calculated draft prices require client review. Appliances are excluded until marked billable. Props never appear here."))
+        layout.addWidget(QLabel("Draft prices resolve from approved Price Setup rules. Manual prices are explicit exceptions. Appliances require billable selection; props never appear here."))
         self.quote_table = _read_only_table(["ID", "Item", "Category", "Qty", "Billable", "Unit price", "Line total", "Pricing mode"])
         quote_header = self.quote_table.horizontalHeader()
         quote_header.setStretchLastSection(False)
@@ -175,10 +175,11 @@ class DocumentsWorkspace(QWidget):
                     check.setChecked(line.billable)
                     check.toggled.connect(lambda checked, item_id=line.item_id: self._set_billable(item_id, checked))
                     self.quote_table.setCellWidget(row, 4, check)
-                price = QLineEdit(data.unit_prices.get(line.item_id, "") if line.pricing_mode == "manual"
+                manual_edit = line.pricing_mode in ("unconfigured", "manual exception")
+                price = QLineEdit(data.unit_prices.get(line.item_id, "") if manual_edit
                                   else (str(line.unit_price) if line.unit_price is not None else ""))
-                price.setPlaceholderText("Enter price" if line.pricing_mode == "manual" else "Price pending")
-                price.setEnabled(line.pricing_mode == "manual")
+                price.setPlaceholderText("Manual exception" if manual_edit else "Price pending")
+                price.setEnabled(manual_edit)
                 price.editingFinished.connect(lambda item_id=line.item_id, field=price: self._set_price(item_id, field.text()))
                 self.quote_table.setCellWidget(row, 5, price)
                 self.quote_table.setItem(row, 6, QTableWidgetItem(str(line.total) if line.total is not None else "—"))

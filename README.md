@@ -1,5 +1,13 @@
 # kuchhe7 Client Approval Demo v1.0.1
 
+## Stage 7B.3 catalogue-first pricing
+
+Configure the local company Price Setup before creating a project. New projects
+copy approved rate records and exact-variant or calculated catalogue rules;
+draft cabinet quotations then resolve automatically. See the
+[Stage 7B.3 guide](docs/STAGE7B3_CATALOGUE_PRICING.md). Synthetic fixture prices
+are for validation only.
+
 ## Stage 7B.2 cabinet validation preparation
 
 Use the [cabinet validation guide](docs/STAGE7B2_CABINET_VALIDATION.md) to compare
