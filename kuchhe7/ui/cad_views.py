@@ -5,36 +5,42 @@ from math import cos, pi, sin
 
 import pyvista as pv
 from vtkmodules.vtkCommonMath import vtkMatrix4x4
+from vtkmodules.vtkRenderingCore import vtkCellPicker
 from pyvistaqt import QtInteractor
-from PySide6.QtCore import QLineF, QPointF, Qt, Signal
+from PySide6.QtCore import QEvent, QLineF, QPoint, QPointF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPolygonF
 from PySide6.QtWidgets import QGraphicsItem, QGraphicsScene, QGraphicsView, QVBoxLayout, QWidget
 
 from ..catalogue import create_catalogue_cabinet, get_catalogue_item, normalized_finish
 from ..models import Cabinet, Opening, PlacedProduct, Room
-from ..product_libraries import get_product, product_colour
+from ..product_libraries import CURATED_PROP_IDS, get_product, product_colour
+from .prop_geometry import add_curated_prop_geometry
+from .presentation_textures import (
+    backsplash_texture, door_wood_texture, floor_texture, garden_texture, map_surface,
+    plaster_texture, stone_texture, wood_texture,
+)
 from ..openings import opening_error, opening_furniture_conflict, wall_length
 from ..placement import placement_error, product_placement_error, snap_position
 from ..presentation import connected_base_runs
 
 
 FINISH_COLOURS = {
-    "Warm White": "#F0EEE8",
-    "Cashmere": "#C5B5A2",
-    "Natural Oak": "#BA9569",
-    "Walnut": "#72503B",
-    "Graphite": "#464B4E",
-    "White Matte": "#F0EEE8",
-    "Cashmere / Greige Matte": "#C5B5A2",
-    "Graphite Grey": "#464B4E",
+    "Warm White": "#E8E5DE",
+    "Cashmere": "#BDB2A5",
+    "Natural Oak": "#B99568",
+    "Walnut": "#694B39",
+    "Graphite": "#43474A",
+    "White Matte": "#E8E5DE",
+    "Cashmere / Greige Matte": "#BDB2A5",
+    "Graphite Grey": "#43474A",
 }
 
 FINISH_SURFACES = {
-    "Warm White": {"edge": "#C6C1B8", "ambient": 0.48, "diffuse": 0.52, "specular": 0.11},
-    "Cashmere": {"edge": "#948777", "ambient": 0.43, "diffuse": 0.57, "specular": 0.09},
-    "Natural Oak": {"edge": "#856746", "ambient": 0.39, "diffuse": 0.61, "specular": 0.07},
-    "Walnut": {"edge": "#463127", "ambient": 0.39, "diffuse": 0.61, "specular": 0.10},
-    "Graphite": {"edge": "#303538", "ambient": 0.46, "diffuse": 0.54, "specular": 0.13},
+    "Warm White": {"edge": "#C8C3B9", "ambient": 0.39, "diffuse": 0.61, "specular": 0.13},
+    "Cashmere": {"edge": "#968D81", "ambient": 0.37, "diffuse": 0.63, "specular": 0.11},
+    "Natural Oak": {"edge": "#856B4F", "ambient": 0.35, "diffuse": 0.65, "specular": 0.08},
+    "Walnut": {"edge": "#46352B", "ambient": 0.38, "diffuse": 0.62, "specular": 0.09},
+    "Graphite": {"edge": "#33383A", "ambient": 0.40, "diffuse": 0.60, "specular": 0.12},
 }
 
 PLAN_FINISH_COLOURS = {
@@ -69,7 +75,7 @@ class RoomPlanView(QGraphicsView):
         self.setScene(QGraphicsScene(self))
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.setRenderHint(QPainter.RenderHint.TextAntialiasing)
-        self.setBackgroundBrush(QColor("#F7F9FB"))
+        self.setBackgroundBrush(QColor("#FAF9F6"))
         self.setFrameShape(QGraphicsView.Shape.NoFrame)
         self.setDragMode(QGraphicsView.DragMode.NoDrag)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
@@ -113,12 +119,13 @@ class RoomPlanView(QGraphicsView):
 
     @staticmethod
     def _dimension_font() -> QFont:
-        return QFont("Segoe UI", 8, QFont.Weight.DemiBold)
+        return QFont("Segoe UI", 9, QFont.Weight.DemiBold)
 
     def _draw_horizontal_dimension(self, x1: float, x2: float, wall_y: float, value: int) -> None:
         scene = self.scene()
         dim_y = wall_y - 36
-        pen = QPen(QColor("#667785"), 1)
+        pen = QPen(QColor("#817D73"), 1)
+        pen.setCosmetic(True)
         scene.addLine(x1, wall_y - 3, x1, dim_y - 5, pen)
         scene.addLine(x2, wall_y - 3, x2, dim_y - 5, pen)
         scene.addLine(x1, dim_y, x2, dim_y, pen)
@@ -127,14 +134,15 @@ class RoomPlanView(QGraphicsView):
         scene.addLine(x2, dim_y, x2 - 8, dim_y - 4, pen)
         scene.addLine(x2, dim_y, x2 - 8, dim_y + 4, pen)
         label = scene.addText(f"{value:,} mm", self._dimension_font())
-        label.setDefaultTextColor(QColor("#425466"))
+        label.setDefaultTextColor(QColor("#535C57"))
         label_rect = label.boundingRect()
         label.setPos((x1 + x2 - label_rect.width()) / 2, dim_y - label_rect.height() - 3)
 
     def _draw_vertical_dimension(self, y1: float, y2: float, wall_x: float, value: int) -> None:
         scene = self.scene()
         dim_x = wall_x - 40
-        pen = QPen(QColor("#667785"), 1)
+        pen = QPen(QColor("#817D73"), 1)
+        pen.setCosmetic(True)
         scene.addLine(wall_x - 3, y1, dim_x + 5, y1, pen)
         scene.addLine(wall_x - 3, y2, dim_x + 5, y2, pen)
         scene.addLine(dim_x, y1, dim_x, y2, pen)
@@ -143,7 +151,7 @@ class RoomPlanView(QGraphicsView):
         scene.addLine(dim_x, y2, dim_x - 4, y2 - 8, pen)
         scene.addLine(dim_x, y2, dim_x + 4, y2 - 8, pen)
         label = scene.addText(f"{value:,} mm", self._dimension_font())
-        label.setDefaultTextColor(QColor("#425466"))
+        label.setDefaultTextColor(QColor("#535C57"))
         label.setRotation(-90)
         label.setPos(dim_x - label.boundingRect().height() - 3, (y1 + y2 + label.boundingRect().width()) / 2)
 
@@ -176,11 +184,11 @@ class RoomPlanView(QGraphicsView):
         self._preview_label = None
         self._guide_items.clear()
         scale = min(680 / room.width, 510 / room.depth)
-        ox, oy = 88.0, 78.0
+        ox, oy = 74.0, 68.0
         self._scale, self._ox, self._oy = scale, ox, oy
         rw, rd = room.width * scale, room.depth * scale
 
-        grid_pen = QPen(QColor("#DDE5EA"), 0.8, Qt.PenStyle.DashLine)
+        grid_pen = QPen(QColor("#E7E2D9"), 0.8, Qt.PenStyle.DashLine)
         for distance in range(500, room.width, 500):
             x = ox + distance * scale
             scene.addLine(x, oy, x, oy + rd, grid_pen)
@@ -197,7 +205,7 @@ class RoomPlanView(QGraphicsView):
         for wall in room.walls:
             selected_wall = wall.wall_id == selected_wall_id
             wall_pen = QPen(
-                QColor("#147D83" if selected_wall else "#172A3C"),
+                QColor("#60766F" if selected_wall else "#333B3C"),
                 9 if selected_wall else 8,
                 Qt.PenStyle.SolidLine,
                 Qt.PenCapStyle.SquareCap,
@@ -226,8 +234,9 @@ class RoomPlanView(QGraphicsView):
                     270: (local_y, w - local_x),
                 }[cabinet.orientation_degrees]
                 return QPointF(cabinet_x + rotated[0] * scale, cabinet_y + rotated[1] * scale)
-            outline = QColor("#147D83") if selected else QColor("#425765")
-            footprint_pen = QPen(outline, 3.5 if selected else 1.8)
+            outline = QColor("#60766F") if selected else QColor("#596560")
+            footprint_pen = QPen(outline, 2.2 if selected else 1.2)
+            footprint_pen.setCosmetic(True)
             if catalogue_item.category == "Wall Cabinets":
                 footprint_pen.setStyle(Qt.PenStyle.DashLine)
             fill = QColor(PLAN_FINISH_COLOURS[cabinet.material])
@@ -248,7 +257,9 @@ class RoomPlanView(QGraphicsView):
             # target remains deterministic regardless of project list order.
             cabinet_item.setZValue(20 if catalogue_item.category == "Wall Cabinets" else 10)
             self._cabinet_items[cabinet.cabinet_id] = cabinet_item
-            front_line = scene.addLine(QLineF(plan_point(0, 0), plan_point(cabinet.width, 0)), QPen(QColor("#0B5559"), 3))
+            front_pen = QPen(QColor("#50675E"), 1.7)
+            front_pen.setCosmetic(True)
+            front_line = scene.addLine(QLineF(plan_point(0, 0), plan_point(cabinet.width, 0)), front_pen)
             front_line.setZValue(cabinet_item.zValue() + 1)
             divisions = cabinet.drawer_count if catalogue_item.front_style == "drawers" else cabinet.door_count
             for index in range(1, divisions):
@@ -274,7 +285,7 @@ class RoomPlanView(QGraphicsView):
                 and other.position_y < cabinet.position_y + cabinet.footprint_depth
                 and cabinet.position_y < other.position_y + other.footprint_depth
                 for other in cabinets if other.cabinet_id != cabinet.cabinet_id)
-            label_font = QFont("Segoe UI", 7, QFont.Weight.DemiBold)
+            label_font = QFont("Segoe UI", 8, QFont.Weight.DemiBold)
             label = scene.addText(f"{cabinet.cabinet_id} {plan_name}", label_font)
             if not stacked:
                 label.setPlainText(f"{cabinet.cabinet_id} {plan_name}\n{cabinet.width} × {cabinet.depth} mm")
@@ -285,7 +296,7 @@ class RoomPlanView(QGraphicsView):
             label.setToolTip(f"{cabinet.cabinet_id} · {catalogue_item.name}\n"
                              f"{cabinet.width} × {cabinet.height} × {cabinet.depth} mm")
             label.setData(0, cabinet.cabinet_id)
-            label.setDefaultTextColor(QColor("#0B4E52") if selected else QColor("#172A3C"))
+            label.setDefaultTextColor(QColor("#365349") if selected else QColor("#293136"))
             label.setZValue(30)
             if label.boundingRect().height() > max(1, cd - 6):
                 label.setPlainText(cabinet.cabinet_id)
@@ -298,16 +309,18 @@ class RoomPlanView(QGraphicsView):
             selected = product.item_id == selected_product_id
             x, y = ox + product.position_x * scale, oy + product.position_y * scale
             colour = QColor(product_colour(product.type_id, product.appearance))
-            colour.setAlpha(185 if selected else 135)
-            pen = QPen(QColor("#147D83" if selected else "#6B7880"), 2.6 if selected else 1.4)
+            colour.setAlpha(185 if selected else (85 if definition.library == "Decorative Props" else 135))
+            pen = QPen(QColor("#60766F" if selected else "#929A94"), 2.6 if selected else 1.4)
             if product.elevation_z:
                 pen.setStyle(Qt.PenStyle.DashLine)
-            footprint = scene.addRect(x, y, product.width * scale, product.depth * scale, pen, colour)
+            footprint = scene.addRect(x, y, product.footprint_width * scale, product.footprint_depth * scale, pen, colour)
             footprint.setData(0, f"product:{product.item_id}")
             footprint.setToolTip(f"{product.item_id} · {definition.name}\n{product.width} × {product.depth} × {product.height} mm")
             footprint.setZValue(40)
             self._product_items[product.item_id] = footprint
-            label = scene.addText(f"{product.item_id} · {definition.name.split()[-1].upper()}",
+            label_text = (product.item_id if definition.library == "Decorative Props"
+                          else f"{product.item_id} · {definition.name.split()[-1].upper()}")
+            label = scene.addText(label_text,
                                   QFont("Segoe UI", 7, QFont.Weight.DemiBold))
             label.setData(0, f"product:{product.item_id}")
             label.setDefaultTextColor(QColor("#173B44"))
@@ -316,7 +329,7 @@ class RoomPlanView(QGraphicsView):
 
         self._draw_horizontal_dimension(ox, ox + rw, oy, room.width)
         self._draw_vertical_dimension(oy, oy + rd, ox, room.depth)
-        scene.setSceneRect(8, 8, rw + 175, rd + 145)
+        scene.setSceneRect(10, 8, rw + 96, rd + 106)
         self.fitInView(scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
 
     def _wall_local_to_scene(self, wall_id: str, u: float, v: float = 0.0) -> QPointF:
@@ -344,9 +357,11 @@ class RoomPlanView(QGraphicsView):
         key = f"opening:{opening.opening_id}"
         gap = self.scene().addLine(start.x(), start.y(), end.x(), end.y(), QPen(QColor("#FFFFFF"), 11))
         self._tag_item(gap, key, 11)
-        accent = QColor("#E2A93B" if selected else ("#147D83" if opening.kind == "door" else "#2D9CDB"))
+        accent = QColor("#B49A77" if selected else ("#60766F" if opening.kind == "door" else "#819BA0"))
         if opening.kind == "window":
-            line = self.scene().addLine(start.x(), start.y(), end.x(), end.y(), QPen(accent, 5))
+            window_pen = QPen(accent, 3)
+            window_pen.setCosmetic(True)
+            line = self.scene().addLine(start.x(), start.y(), end.x(), end.y(), window_pen)
             self._tag_item(line, key, 12)
             self._opening_items[opening.opening_id] = line
         else:
@@ -356,7 +371,9 @@ class RoomPlanView(QGraphicsView):
             direction = 1.0 if inward else -1.0
             hinge = self._wall_local_to_scene(opening.wall_id, hinge_u)
             leaf_end = self._wall_local_to_scene(opening.wall_id, hinge_u, direction * opening.width)
-            leaf = self.scene().addLine(hinge.x(), hinge.y(), leaf_end.x(), leaf_end.y(), QPen(accent, 2.4))
+            leaf_pen = QPen(accent, 2)
+            leaf_pen.setCosmetic(True)
+            leaf = self.scene().addLine(hinge.x(), hinge.y(), leaf_end.x(), leaf_end.y(), leaf_pen)
             self._tag_item(leaf, key, 12)
             path = QPainterPath()
             for index in range(13):
@@ -368,14 +385,16 @@ class RoomPlanView(QGraphicsView):
                     path.moveTo(point)
                 else:
                     path.lineTo(point)
-            arc = self.scene().addPath(path, QPen(accent.lighter(125), 1.3, Qt.PenStyle.DashLine))
+            arc_pen = QPen(accent.lighter(115), 1.2, Qt.PenStyle.DashLine)
+            arc_pen.setCosmetic(True)
+            arc = self.scene().addPath(path, arc_pen)
             self._tag_item(arc, key, 11)
             self._opening_items[opening.opening_id] = leaf
 
         midpoint = (start + end) / 2
         label = self.scene().addText(
             f"{opening.opening_id}  {opening.width} mm\noffset {opening.offset} mm",
-            QFont("Segoe UI", 7, QFont.Weight.Bold if selected else QFont.Weight.DemiBold),
+            QFont("Segoe UI", 8, QFont.Weight.Bold if selected else QFont.Weight.DemiBold),
         )
         label.setDefaultTextColor(accent.darker(125))
         label.setPos(midpoint.x() + 5, midpoint.y() + 5)
@@ -566,13 +585,13 @@ class RoomPlanView(QGraphicsView):
             product = (next(item for item in self._products if item.item_id == self._dragging_product_id)
                        if self._dragging_product_id else None)
             definition = get_product(product.type_id if product else self._pending_product_type_id)
-            width = product.width if product else definition.width
-            depth = product.depth if product else definition.depth
+            width = product.footprint_width if product else definition.width
+            depth = product.footprint_depth if product else definition.depth
             x = round(model_point.x() - (self._drag_offset.x() if product else width / 2))
             y = round(model_point.y() - (self._drag_offset.y() if product else depth / 2))
             candidate = deepcopy(product) if product else PlacedProduct(
                 "PREVIEW", definition.type_id, x, y, definition.elevation_z,
-                width, depth, definition.height,
+                definition.width, definition.depth, definition.height,
             )
             candidate.position_x, candidate.position_y = x, y
             error = product_placement_error(self._room, self._cabinets, self._products, candidate)
@@ -758,6 +777,9 @@ class RoomPlanView(QGraphicsView):
 
 
 class Cabinet3DView(QWidget):
+    cabinetSelected = Signal(str)
+    productSelected = Signal(str)
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("cabinet3D")
@@ -772,18 +794,83 @@ class Cabinet3DView(QWidget):
         self._room_walls_visible = True
         self._door_actors: list[object] = []
         self._handle_actors: list[object] = []
+        self._handle_mount_actors: list[object] = []
         self._shelf_actors: list[object] = []
         self._selection_actors: list[object] = []
         self._environment_actors: list[object] = []
         self._room_wall_actors: list[object] = []
+        self._pick_targets: dict[str, tuple[str, str]] = {}
+        self._click_press_pos: QPoint | None = None
+        self._click_dragged = False
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self.plotter = QtInteractor(self)
         self._plotter_closed = False
-        self.plotter.set_background("#F3F6F8", top="#DDE6EC")
+        self.plotter.set_background("#F6F4EF", top="#E8E5DF")
         self.plotter.enable_anti_aliasing("ssaa")
         layout.addWidget(self.plotter.interactor)
+        self.plotter.interactor.installEventFilter(self)
         self.update_cabinet(self._cabinet, reset_camera=True)
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt API
+        if watched is self.plotter.interactor:
+            if event.type() == QEvent.Type.MouseButtonPress:
+                self._click_press_pos = (
+                    event.position().toPoint()
+                    if event.button() == Qt.MouseButton.LeftButton
+                    and event.modifiers() == Qt.KeyboardModifier.NoModifier else None
+                )
+                self._click_dragged = False
+            elif event.type() == QEvent.Type.MouseMove and self._click_press_pos is not None:
+                if (event.position().toPoint() - self._click_press_pos).manhattanLength() > 4:
+                    self._click_dragged = True
+            elif event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
+                press = self._click_press_pos
+                self._click_press_pos = None
+                if press is not None and not self._click_dragged and (
+                    event.position().toPoint() - press
+                ).manhattanLength() <= 4:
+                    # Let VTK finish its mouse release before a selection rebuilds the scene.
+                    point = event.position().toPoint()
+                    QTimer.singleShot(0, lambda point=point: self._pick_scene_at(point))
+        return super().eventFilter(watched, event)
+
+    @staticmethod
+    def _actor_key(actor) -> str:
+        return actor.GetAddressAsString("")
+
+    def _register_pick_targets(self, before: set[str], kind: str, item_id: str) -> None:
+        for name, actor in self.plotter.renderer.actors.items():
+            if name not in before and "-selection" not in name and actor.GetPickable():
+                self._pick_targets[self._actor_key(actor)] = (kind, item_id)
+
+    def _pick_scene_at(self, point: QPoint) -> None:
+        if self._plotter_closed or not self._pick_targets:
+            return
+        widget = self.plotter.interactor
+        render_width, render_height = self.plotter.render_window.GetSize()
+        if render_width <= 0 or render_height <= 0:
+            return
+        if not (0 <= point.x() < widget.width() and 0 <= point.y() < widget.height()):
+            return
+        picker = vtkCellPicker()
+        picker.PickFromListOn()
+        for actor in self.plotter.renderer.actors.values():
+            if self._actor_key(actor) in self._pick_targets:
+                picker.AddPickList(actor)
+        x = round(point.x() * render_width / max(1, widget.width()))
+        y = round((widget.height() - 1 - point.y()) * render_height / max(1, widget.height()))
+        if not picker.Pick(x, y, 0, self.plotter.renderer):
+            return  # Empty space follows the existing 2D rule: keep the selection.
+        actor = picker.GetActor()
+        target = self._pick_targets.get(self._actor_key(actor)) if actor is not None else None
+        if target is None:
+            return
+        kind, item_id = target
+        if kind == "cabinet":
+            self.cabinetSelected.emit(item_id)
+        else:
+            self.productSelected.emit(item_id)
 
     @property
     def doors_visible(self) -> bool:
@@ -825,17 +912,22 @@ class Cabinet3DView(QWidget):
     ):
         surface = FINISH_SURFACES.get(normalized_finish(finish), {}) if finish else {}
         presentation_edge = surface.get("edge", edge_colour) if not selected else edge_colour
+        finish_name = normalized_finish(finish) if finish else None
+        grain = wood_texture(finish_name) if self._presentation_mode and finish_name in ("Walnut", "Natural Oak") else None
+        if grain is not None:
+            mesh = map_surface(mesh, "front")
         return self.plotter.add_mesh(
             mesh,
             name=name,
-            color=colour,
+            color="#FFFFFF" if grain is not None else colour,
+            texture=grain,
             edge_color=presentation_edge if self._presentation_mode else edge_colour,
             show_edges=True,
-            line_width=1.6 if selected else (0.55 if self._presentation_mode else 0.8),
-            ambient=surface.get("ambient", 0.40) if self._presentation_mode else 0.28,
-            diffuse=surface.get("diffuse", 0.60) if self._presentation_mode else 0.72,
-            specular=surface.get("specular", 0.12) if self._presentation_mode else 0.08,
-            specular_power=18 if self._presentation_mode else 14,
+            line_width=1.4 if selected else (0.65 if self._presentation_mode else 0.8),
+            ambient=max(0.78, surface.get("ambient", 0.40)) if self._presentation_mode else 0.28,
+            diffuse=0.43 if self._presentation_mode else 0.72,
+            specular=max(0.14, surface.get("specular", 0.12)) if self._presentation_mode else 0.08,
+            specular_power=34 if self._presentation_mode else 14,
             smooth_shading=False,
         )
 
@@ -848,9 +940,9 @@ class Cabinet3DView(QWidget):
         cx, cy = (min_x + max_x) / 2, (min_y + max_y) / 2
         if self._presentation_mode:
             lights = [
-                pv.Light(position=(max_x + w * 0.8, min_y - d * 1.2, h * 2.0), focal_point=(cx, cy, h * 0.46), color="#FFF9EE", intensity=0.88),
-                pv.Light(position=(min_x - w * 0.5, min_y - d * 0.4, h * 1.25), focal_point=(cx, cy, h * 0.5), color="#E8EEF1", intensity=0.48),
-                pv.Light(position=(cx, max_y + d * 0.5, h * 1.8), focal_point=(cx, cy, h * 0.55), color="#FFF4E5", intensity=0.38),
+                pv.Light(position=(max_x + w * 0.65, min_y - d * 1.15, h * 1.7), focal_point=(cx, cy, h * 0.46), color="#FFF5E9", intensity=1.05),
+                pv.Light(position=(min_x - w * 0.55, min_y - d * 0.35, h * 1.3), focal_point=(cx, cy, h * 0.5), color="#EDF2EE", intensity=0.70),
+                pv.Light(position=(cx, max_y + d * 0.45, h * 1.55), focal_point=(cx, cy, h * 0.55), color="#FFF0DF", intensity=0.34),
             ]
         else:
             lights = [
@@ -890,21 +982,27 @@ class Cabinet3DView(QWidget):
             cabinets[0] if cabinets else None,
         )
         self.plotter.clear()
+        self._pick_targets.clear()
         self._door_actors.clear()
         self._handle_actors.clear()
+        self._handle_mount_actors.clear()
         self._shelf_actors.clear()
         self._selection_actors.clear()
         self._environment_actors.clear()
         self._room_wall_actors.clear()
         if self._presentation_mode:
-            self.plotter.set_background("#F0EEE8", top="#DDE4E5")
+            self.plotter.set_background("#F6F3ED", top="#E9E7E1")
             self._add_presentation_environment()
         else:
-            self.plotter.set_background("#F3F6F8", top="#DDE6EC")
+            self.plotter.set_background("#F6F4EF", top="#E8E5DF")
         for cabinet in cabinets:
+            before = set(self.plotter.renderer.actors)
             self._add_cabinet_geometry(cabinet, cabinet.cabinet_id == selected_cabinet_id)
+            self._register_pick_targets(before, "cabinet", cabinet.cabinet_id)
         for product in self._products:
+            before = set(self.plotter.renderer.actors)
             self._add_product_geometry(product)
+            self._register_pick_targets(before, "product", product.item_id)
 
         self._configure_lighting()
         if not self._presentation_mode:
@@ -928,10 +1026,14 @@ class Cabinet3DView(QWidget):
         colour = product_colour(product.type_id, product.appearance)
         name = f"product-{product.item_id}"
         if product.item_id == self._selected_product_id:
-            outline = self._box(x - 5, x + w + 5, y - 5, y + d + 5, z - 5, z + h + 5)
+            outline = self._box(x - 5, x + product.footprint_width + 5,
+                                y - 5, y + product.footprint_depth + 5, z - 5, z + h + 5)
             actor = self.plotter.add_mesh(outline, name=f"{name}-selection", style="wireframe",
                                           color="#147D83", opacity=0.60, line_width=2, pickable=False)
             actor.SetUseBounds(False)
+        if product.type_id in CURATED_PROP_IDS:
+            add_curated_prop_geometry(self.plotter, product, definition, x, y, z, name)
+            return
         if definition.shape == "sink":
             wall = max(3.0, min(w, d) * 0.055)
             bottom_height = max(2.0, h * 0.12)
@@ -1066,14 +1168,15 @@ class Cabinet3DView(QWidget):
                 name = base_names[wall_id] if segment_index == 0 else f"{base_names[wall_id]}-{segment_index}"
                 mesh = self._wall_segment_mesh(wall_id, u0, u1, z0, z1, room_x0, room_y0, thickness)
                 self._add_environment_mesh(
-                    mesh,
+                    map_surface(mesh, "side" if wall_id in ("WEST", "EAST") else "front"),
                     name=name,
-                    colour=colour,
+                    colour="#FFFFFF",
+                    texture=plaster_texture(),
                     wall=True,
                     opacity=opacity,
-                    ambient=0.60,
-                    diffuse=0.40,
-                    specular=0.02,
+                    ambient=0.92,
+                    diffuse=0.12,
+                    specular=0.05,
                 )
                 segment_index += 1
 
@@ -1081,8 +1184,94 @@ class Cabinet3DView(QWidget):
             self._add_opening_detail(opening, room_x0, room_y0, thickness)
 
     def _add_opening_detail(self, opening: Opening, room_x0: float, room_y0: float, thickness: float) -> None:
-        trim = 42.0
-        frame_colour = "#6C7478" if opening.kind == "window" else "#725B48"
+        trim = 30.0 if opening.kind == "window" else 42.0
+        frame_colour = "#3D4847" if opening.kind == "window" else "#705139"
+        inside_direction = {
+            "WEST": (1, 0, 0), "EAST": (-1, 0, 0),
+            "SOUTH": (0, -1, 0), "NORTH": (0, 1, 0),
+        }[opening.wall_id]
+
+        def inside(mesh: pv.PolyData, distance: float) -> pv.PolyData:
+            # Presentation trim projects into the room, preventing coplanar
+            # wall/trim faces from flickering during orbit and screenshots.
+            return mesh.translate(tuple(distance * axis for axis in inside_direction), inplace=False)
+
+        if opening.kind == "door":
+            door_inset = 16.0
+            door_u0, door_u1 = opening.offset + door_inset, opening.offset + opening.width - door_inset
+            door_z0, door_z1 = opening.elevation + 12, opening.elevation + opening.height - 20
+            leaf = self._wall_segment_mesh(
+                opening.wall_id, door_u0, door_u1, door_z0, door_z1,
+                room_x0, room_y0, thickness * 0.75,
+            )
+            self._add_environment_mesh(
+                map_surface(inside(leaf, 2), "side" if opening.wall_id in ("WEST", "EAST") else "front"),
+                name=f"presentation-opening-{opening.opening_id}-leaf",
+                colour="#FFFFFF", texture=door_wood_texture(), wall=True,
+                ambient=0.78, diffuse=0.25, specular=0.16,
+            )
+            rail, stile = min(78.0, opening.height * 0.055), min(57.0, opening.width * 0.07)
+            door_parts = (
+                (door_u0, door_u0 + stile, door_z0, door_z1),
+                (door_u1 - stile, door_u1, door_z0, door_z1),
+                (door_u0 + stile, door_u1 - stile, door_z0, door_z0 + rail),
+                (door_u0 + stile, door_u1 - stile, door_z1 - rail, door_z1),
+            )
+            for index, (u0, u1, z0, z1) in enumerate(door_parts):
+                face = self._wall_segment_mesh(
+                    opening.wall_id, u0, u1, z0, z1, room_x0, room_y0, thickness * 0.36,
+                )
+                self._add_environment_mesh(
+                    map_surface(inside(face, 7), "side" if opening.wall_id in ("WEST", "EAST") else "front"),
+                    name=f"presentation-opening-{opening.opening_id}-door-moulding-{index}",
+                    colour="#FFFFFF", texture=door_wood_texture("frame"), wall=True,
+                    ambient=0.74, diffuse=0.24, specular=0.12,
+                )
+            inset_u0, inset_u1 = door_u0 + stile, door_u1 - stile
+            inset_z0, inset_z1 = door_z0 + rail, door_z1 - rail
+            bead = 11.0
+            inner_beads = (
+                (inset_u0, inset_u0 + bead, inset_z0, inset_z1),
+                (inset_u1 - bead, inset_u1, inset_z0, inset_z1),
+                (inset_u0 + bead, inset_u1 - bead, inset_z0, inset_z0 + bead),
+                (inset_u0 + bead, inset_u1 - bead, inset_z1 - bead, inset_z1),
+            )
+            for index, (u0, u1, z0, z1) in enumerate(inner_beads):
+                bead_mesh = self._wall_segment_mesh(
+                    opening.wall_id, u0, u1, z0, z1, room_x0, room_y0, thickness * 0.25,
+                )
+                self._add_environment_mesh(
+                    inside(bead_mesh, 4),
+                    name=f"presentation-opening-{opening.opening_id}-panel-bead-{index}",
+                    colour="#765139", wall=True, ambient=0.62, diffuse=0.32, specular=0.12,
+                )
+            handle_u = opening.offset + opening.width * (0.77 if "Left" in opening.swing else 0.23)
+            handle_z = opening.elevation + min(1030, opening.height * 0.52)
+            if opening.wall_id in ("WEST", "EAST"):
+                wall_x = room_x0 if opening.wall_id == "WEST" else room_x0 + self._room.width
+                handle_center = (wall_x + inside_direction[0] * 25, room_y0 + handle_u, handle_z)
+                lever_direction = (0, 1, 0)
+            else:
+                wall_y = room_y0 if opening.wall_id == "NORTH" else room_y0 + self._room.depth
+                handle_center = (room_x0 + handle_u, wall_y + inside_direction[1] * 25, handle_z)
+                lever_direction = (1, 0, 0)
+            rose_center = tuple(handle_center[index] - inside_direction[index] * 15 for index in range(3))
+            self._add_environment_mesh(
+                pv.Cylinder(center=rose_center, direction=inside_direction, radius=21, height=5, resolution=24),
+                name=f"presentation-opening-{opening.opening_id}-rose",
+                colour="#303634", wall=True, ambient=0.43, diffuse=0.48, specular=0.35,
+            )
+            spindle_center = tuple(handle_center[index] - inside_direction[index] * 7 for index in range(3))
+            self._add_environment_mesh(
+                pv.Cylinder(center=spindle_center, direction=inside_direction, radius=6, height=19, resolution=16),
+                name=f"presentation-opening-{opening.opening_id}-spindle",
+                colour="#3B4240", wall=True, ambient=0.40, diffuse=0.50, specular=0.34,
+            )
+            self._add_environment_mesh(
+                pv.Cylinder(center=handle_center, direction=lever_direction, radius=7, height=105, resolution=20),
+                name=f"presentation-opening-{opening.opening_id}-handle",
+                colour="#343B38", wall=True, ambient=0.43, diffuse=0.48, specular=0.42,
+            )
         pieces = [
             (opening.offset - trim, opening.offset, opening.elevation, opening.elevation + opening.height + trim),
             (opening.offset + opening.width, opening.offset + opening.width + trim,
@@ -1108,30 +1297,82 @@ class Cabinet3DView(QWidget):
                 thickness + 8,
             )
             self._add_environment_mesh(
-                mesh,
+                inside(mesh, 9),
                 name=f"presentation-opening-{opening.opening_id}-frame-{index}",
                 colour=frame_colour,
                 wall=True,
                 ambient=0.30,
             )
         if opening.kind == "window":
-            glass = self._wall_segment_mesh(
-                opening.wall_id,
-                opening.offset + trim,
-                opening.offset + opening.width - trim,
-                opening.elevation + trim,
-                opening.elevation + opening.height - trim,
-                room_x0,
-                room_y0,
-                max(5.0, thickness * 0.20),
+            sill = self._wall_segment_mesh(
+                opening.wall_id, opening.offset - 38, opening.offset + opening.width + 38,
+                opening.elevation - 49, opening.elevation - 25,
+                room_x0, room_y0, thickness + 68,
             )
             self._add_environment_mesh(
-                glass,
-                name=f"presentation-opening-{opening.opening_id}-glass",
-                colour="#9CC7D7",
-                wall=True,
-                opacity=0.30,
-                specular=0.32,
+                inside(sill, 10), name=f"presentation-opening-{opening.opening_id}-sill",
+                colour="#D8D0C5", wall=True, ambient=0.46, diffuse=0.55, specular=0.12,
+            )
+            u0 = opening.offset + trim
+            u1 = opening.offset + opening.width - trim
+            z0 = opening.elevation + trim
+            z1 = opening.elevation + opening.height - trim
+            if opening.wall_id == "WEST":
+                backdrop = self._box(room_x0 - 90, room_x0 - 86, room_y0 + u0, room_y0 + u1, z0, z1)
+            elif opening.wall_id == "EAST":
+                east = room_x0 + self._room.width
+                backdrop = self._box(east + 86, east + 90, room_y0 + u0, room_y0 + u1, z0, z1)
+            elif opening.wall_id == "SOUTH":
+                south = room_y0 + self._room.depth
+                backdrop = self._box(room_x0 + u0, room_x0 + u1, south + 86, south + 90, z0, z1)
+            else:
+                backdrop = self._box(room_x0 + u0, room_x0 + u1, room_y0 - 90, room_y0 - 86, z0, z1)
+            self._add_environment_mesh(
+                map_surface(backdrop, "side" if opening.wall_id in ("WEST", "EAST") else "front"),
+                name=f"presentation-opening-{opening.opening_id}-exterior",
+                colour="#FFFFFF", texture=garden_texture(), wall=True,
+                ambient=0.70, diffuse=0.32,
+            )
+            middle = opening.offset + opening.width / 2
+            for pane_index, (pane_u0, pane_u1) in enumerate(((u0, middle - 14), (middle + 14, u1))):
+                sash = min(24.0, (pane_u1 - pane_u0) * 0.09)
+                sash_parts = (
+                    (pane_u0, pane_u0 + sash, z0, z1),
+                    (pane_u1 - sash, pane_u1, z0, z1),
+                    (pane_u0 + sash, pane_u1 - sash, z0, z0 + sash),
+                    (pane_u0 + sash, pane_u1 - sash, z1 - sash, z1),
+                )
+                for part_index, (su0, su1, sz0, sz1) in enumerate(sash_parts):
+                    sash_mesh = self._wall_segment_mesh(
+                        opening.wall_id, su0, su1, sz0, sz1,
+                        room_x0, room_y0, thickness + 10,
+                    )
+                    self._add_environment_mesh(
+                        inside(sash_mesh, 18),
+                        name=f"presentation-opening-{opening.opening_id}-sash-{pane_index}-{part_index}",
+                        colour="#414A48", wall=True, ambient=0.48, diffuse=0.45,
+                        specular=0.28, specular_power=42,
+                    )
+                glass = self._wall_segment_mesh(
+                    opening.wall_id, pane_u0 + sash, pane_u1 - sash,
+                    z0 + sash, z1 - sash, room_x0, room_y0, max(5.0, thickness * 0.20),
+                )
+                self._add_environment_mesh(
+                    inside(glass, 5),
+                    name=(f"presentation-opening-{opening.opening_id}-glass"
+                          if pane_index == 0 else f"presentation-opening-{opening.opening_id}-glass-{pane_index}"),
+                    colour="#D6E0DC", wall=True, opacity=0.18,
+                    ambient=0.32, diffuse=0.30, specular=0.72, specular_power=60,
+                )
+            mullion = self._wall_segment_mesh(
+                opening.wall_id, middle - 14, middle + 14,
+                opening.elevation + trim, opening.elevation + opening.height - trim,
+                room_x0, room_y0, thickness + 10,
+            )
+            self._add_environment_mesh(
+                inside(mullion, 15), name=f"presentation-opening-{opening.opening_id}-mullion",
+                colour="#394342", wall=True, ambient=0.48, diffuse=0.43,
+                specular=0.26, specular_power=42,
             )
 
     def _add_presentation_environment(self) -> None:
@@ -1142,10 +1383,22 @@ class Cabinet3DView(QWidget):
         y0, y1 = -origin_y, self._room.depth - origin_y
         wall_height, wall_thickness = float(self._room.height), 32.0
 
-        floor = self._box(x0, x1, y0, y1, -24, 0)
-        self._add_environment_mesh(floor, name="presentation-floor", colour="#D8D1C5", ambient=0.42, specular=0.03)
-        self._add_segmented_wall("SOUTH", x0, y0, wall_height, wall_thickness, "#EEECE6", 0.96)
-        self._add_segmented_wall("WEST", x0, y0, wall_height, wall_thickness, "#E5E3DD", 0.94)
+        floor = map_surface(self._box(x0, x1, y0, y1, -24, 0), "top")
+        self._add_environment_mesh(floor, name="presentation-floor", colour="#FFFFFF",
+                                   texture=floor_texture(), ambient=0.48, diffuse=0.50,
+                                   specular=0.11, specular_power=28)
+        ceiling = self._box(x0, x1, y0, y1, wall_height, wall_height + 16)
+        self._add_environment_mesh(ceiling, name="presentation-ceiling", colour="#F2EBE1",
+                                   wall=True, ambient=0.91, diffuse=0.10)
+        for index, fraction in enumerate((0.22, 0.50, 0.78)):
+            downlight = pv.Cylinder(
+                center=(x0 + self._room.width * fraction, y0 + self._room.depth * 0.36, wall_height - 6),
+                direction=(0, 0, 1), radius=32, height=8, resolution=28,
+            )
+            self._add_environment_mesh(downlight, name=f"presentation-ceiling-light-{index}",
+                                       colour="#FFF0D4", wall=True, ambient=0.68, diffuse=0.32)
+        self._add_segmented_wall("SOUTH", x0, y0, wall_height, wall_thickness, "#EEE5D8", 0.98)
+        self._add_segmented_wall("WEST", x0, y0, wall_height, wall_thickness, "#E8DDD0", 0.98)
         # Keep camera-facing walls open. Their opening frames remain modeled so
         # a north/east opening is still identifiable without veiling furniture.
         for opening in (item for item in self._room.openings if item.wall_id in ("NORTH", "EAST")):
@@ -1153,15 +1406,17 @@ class Cabinet3DView(QWidget):
 
         back_baseboard = self._box(x0, x1, y1 - 12, y1 + 3, 0, 72)
         side_baseboard = self._box(x0 - 3, x0 + 12, y0, y1, 0, 72)
-        self._add_environment_mesh(back_baseboard, name="presentation-back-junction", colour="#C8C1B6", wall=True)
-        self._add_environment_mesh(side_baseboard, name="presentation-side-junction", colour="#C8C1B6", wall=True)
+        self._add_environment_mesh(back_baseboard, name="presentation-back-junction", colour="#C9BDAE", wall=True)
+        self._add_environment_mesh(side_baseboard, name="presentation-side-junction", colour="#C9BDAE", wall=True)
 
         base_units = [item for item in self._cabinets if get_catalogue_item(item.cabinet_type_id).category in ("Base Cabinets", "Vanity") and item.elevation_z == 0]
         if base_units:
             bx0 = min(item.position_x for item in base_units) - origin_x
             bx1 = max(item.position_x + item.footprint_width for item in base_units) - origin_x
-            backsplash = self._box(bx0, bx1, y1 - 10, y1 + 2, 760, 1360)
-            self._add_environment_mesh(backsplash, name="presentation-backsplash", colour="#D6D0C6", wall=True, opacity=0.82)
+            backsplash = map_surface(self._box(bx0, bx1, y1 - 10, y1 + 2, 760, 1360), "front")
+            self._add_environment_mesh(backsplash, name="presentation-backsplash", colour="#FFFFFF",
+                                       texture=backsplash_texture(), wall=True,
+                                       opacity=0.98, ambient=0.90, diffuse=0.14, specular=0.10)
 
         for run in connected_base_runs(self._cabinets):
             run_x0, run_x1 = run.x0 - origin_x, run.x1 - origin_x
@@ -1193,7 +1448,10 @@ class Cabinet3DView(QWidget):
                     mid_x, mid_y = (cell_x0 + cell_x1) / 2, (cell_y0 + cell_y1) / 2
                     if any(sx0 < mid_x < sx1 and sy0 < mid_y < sy1 for sx0, sx1, sy0, sy1, _ in sink_cutouts):
                         continue
-                    countertop = self._box(cell_x0, cell_x1, cell_y0, cell_y1, counter_z0, counter_z1)
+                    countertop = map_surface(
+                        self._box(cell_x0, cell_x1, cell_y0, cell_y1, counter_z0, counter_z1),
+                        "top", (counter_x0, counter_x1, counter_y0, counter_y1, counter_z0, counter_z1),
+                    )
                     counter_name = (
                         f"presentation-countertop-{run_key}"
                         if counter_index == 0
@@ -1202,13 +1460,12 @@ class Cabinet3DView(QWidget):
                     self._add_environment_mesh(
                         countertop,
                         name=counter_name,
-                        colour="#D9D5CC",
-                        ambient=0.46,
-                        diffuse=0.48,
-                        specular=0.20,
-                        pbr=True,
-                        roughness=0.58,
-                        metallic=0.0,
+                        colour="#FFFFFF",
+                        texture=stone_texture(),
+                        ambient=0.40,
+                        diffuse=0.58,
+                        specular=0.22,
+                        specular_power=36,
                     )
                     counter_index += 1
 
@@ -1219,10 +1476,18 @@ class Cabinet3DView(QWidget):
             self._add_environment_mesh(
                 front_edge,
                 name=f"presentation-countertop-edge-{run_key}",
-                colour="#C5C0B6",
+                colour="#494744",
                 ambient=0.42,
                 diffuse=0.52,
                 specular=0.16,
+            )
+            back_cove = self._box(
+                counter_x0, counter_x1, counter_y1 - 7, counter_y1 + 1,
+                counter_z1 - 3, counter_z1 + 7,
+            )
+            self._add_environment_mesh(
+                back_cove, name=f"presentation-countertop-back-cove-{run_key}",
+                colour="#55514E", ambient=0.48, diffuse=0.46, specular=0.14,
             )
             plinth = self._box(
                 run_x0 + 28, run_x1 - 28, run_y0 + 48, run_y1 - 8,
@@ -1242,8 +1507,8 @@ class Cabinet3DView(QWidget):
                 basin_bottom = counter_z0 - 118
                 basin_top = counter_z1 + 10
                 sink_material = {
-                    "colour": "#AAB4B7", "ambient": 0.32, "diffuse": 0.43,
-                    "specular": 0.58, "pbr": True, "metallic": 0.62, "roughness": 0.24,
+                    "colour": "#B5C0C0", "ambient": 0.62, "diffuse": 0.38,
+                    "specular": 0.46, "specular_power": 52,
                 }
                 rim_parts = [
                     (sx0 - rim, sx1 + rim, sy0 - rim, sy0),
@@ -1272,14 +1537,20 @@ class Cabinet3DView(QWidget):
                             if index == 0
                             else f"presentation-sink-{cabinet.cabinet_id}-bowl-{index}"
                         ),
-                        colour="#667479",
-                        ambient=0.22,
-                        diffuse=0.42,
-                        specular=0.50,
-                        pbr=True,
-                        metallic=0.48,
-                        roughness=0.30,
+                        colour="#788689" if index == 0 else "#A9B5B6",
+                        ambient=0.56 if index == 0 else 0.64,
+                        diffuse=0.37,
+                        specular=0.42,
+                        specular_power=48,
                     )
+                drain = pv.Cylinder(
+                    center=((sx0 + sx1) / 2, (sy0 + sy1) / 2, basin_bottom + 15),
+                    direction=(0, 0, 1), radius=26, height=3, resolution=24,
+                )
+                self._add_environment_mesh(
+                    drain, name=f"presentation-sink-{cabinet.cabinet_id}-drain",
+                    colour="#4A5555", ambient=0.35, diffuse=0.45, specular=0.55,
+                )
 
     def _add_cabinet_geometry(self, cabinet: Cabinet, selected: bool) -> None:
         before = set(self.plotter.renderer.actors)
@@ -1315,20 +1586,37 @@ class Cabinet3DView(QWidget):
         px, py, pz = cabinet.position_x - origin_x, cabinet.position_y - origin_y, cabinet.elevation_z
         body_colour = FINISH_COLOURS[cabinet.material]
         inside_colour = "#AD8B64" if cabinet.material == "Natural Oak" else body_colour
-        edge_colour = "#356E70" if selected else "#34434C"
+        edge_colour = ("#A56A38" if self._presentation_mode else "#60766F") if selected else "#49514F"
         if selected:
             selection_box = self._box(px - 6, px + w + 6, py - t - 16, py + d + 6, pz - 6, pz + h + 6)
             selection_actor = self.plotter.add_mesh(
                 selection_box,
                 name=f"{cabinet.cabinet_id}-selection",
                 style="wireframe",
-                color="#3E8587",
-                line_width=2,
-                opacity=0.48,
+                color="#A87343" if self._presentation_mode else "#758A80",
+                line_width=1.7,
+                opacity=0.55 if self._presentation_mode else 0.36,
                 pickable=False,
             )
             selection_actor.SetUseBounds(False)
             self._selection_actors.append(selection_actor)
+            if self._presentation_mode:
+                front_y = py - t - 17
+                front = (
+                    (px - 2, front_y, pz - 2),
+                    (px + w + 2, front_y, pz - 2),
+                    (px + w + 2, front_y, pz + h + 2),
+                    (px - 2, front_y, pz + h + 2),
+                )
+                for index in range(4):
+                    rim = self.plotter.add_mesh(
+                        pv.Line(front[index], front[(index + 1) % 4]),
+                        name=f"{cabinet.cabinet_id}-selection-front-{index}",
+                        color="#B6783E", line_width=2.5,
+                        render_lines_as_tubes=True, pickable=False,
+                    )
+                    rim.SetUseBounds(False)
+                    self._selection_actors.append(rim)
         carcass_parts = [
             ("left-side", self._box(px, px + t, py, py + d, pz, pz + h)),
             ("right-side", self._box(px + w - t, px + w, py, py + d, pz, pz + h)),
@@ -1388,6 +1676,12 @@ class Cabinet3DView(QWidget):
                     direction=(1, 0, 0), radius=handle_radius, height=min(220, w * 0.42), resolution=28, capping=True,
                 )
                 self._handle_actors.append(self.plotter.add_mesh(handle, name=f"{cabinet.cabinet_id}-handle-{drawer_index}", color="#303A42", metallic=0.75, roughness=0.24, smooth_shading=True))
+                self._add_handle_mounts(
+                    f"{cabinet.cabinet_id}-drawer-{drawer_index}",
+                    ((px + w / 2 - min(220, w * 0.42) * 0.34, z0 + drawer_height * 0.72),
+                     (px + w / 2 + min(220, w * 0.42) * 0.34, z0 + drawer_height * 0.72)),
+                    door_back, handle_radius,
+                )
             return
         if not cabinet.door_count or item.front_style == "open":
             return
@@ -1428,7 +1722,7 @@ class Cabinet3DView(QWidget):
             handle_actor = self.plotter.add_mesh(
                 handle,
                 name=f"{cabinet.cabinet_id}-handle-{door_index}",
-                color="#147D83" if selected else "#303A42",
+                color=("#9A6235" if self._presentation_mode else "#147D83") if selected else "#303A42",
                 metallic=0.75,
                 roughness=0.24,
                 smooth_shading=True,
@@ -1436,6 +1730,33 @@ class Cabinet3DView(QWidget):
                 specular_power=45,
             )
             self._handle_actors.append(handle_actor)
+            if item.front_style != "lift_up":
+                self._add_handle_mounts(
+                    f"{cabinet.cabinet_id}-door-{door_index}",
+                    ((handle_x, pz + h * 0.52 - handle_length * 0.34),
+                     (handle_x, pz + h * 0.52 + handle_length * 0.34)),
+                    door_back, handle_radius,
+                )
+
+    def _add_handle_mounts(
+        self, name: str, positions: tuple[tuple[float, float], tuple[float, float]],
+        door_back: float, radius: float,
+    ) -> None:
+        """Visual handle supports; no hardware or BOM quantities are inferred."""
+        if not self._presentation_mode:
+            return
+        for index, (x, z) in enumerate(positions):
+            mount = pv.Cylinder(
+                center=(x, door_back - radius * 0.9, z),
+                direction=(0, 1, 0), radius=max(2.6, radius * 0.62),
+                height=radius * 3.4, resolution=12,
+            )
+            actor = self.plotter.add_mesh(
+                mount, name=f"{name}-handle-mount-{index}",
+                color="#414947", ambient=0.42, diffuse=0.46,
+                specular=0.38, specular_power=38, smooth_shading=True,
+            )
+            self._handle_mount_actors.append(actor)
 
     def _scene_bounds(self) -> tuple[float, float, float, float, float]:
         if not self._cabinets:
@@ -1452,7 +1773,7 @@ class Cabinet3DView(QWidget):
 
     def set_doors_visible(self, visible: bool, *, render: bool = True) -> None:
         self._doors_visible = visible
-        for actor in [*self._door_actors, *self._handle_actors]:
+        for actor in [*self._door_actors, *self._handle_actors, *self._handle_mount_actors]:
             actor.SetVisibility(visible)
         if render:
             self.plotter.render()
@@ -1463,6 +1784,7 @@ class Cabinet3DView(QWidget):
         self._presentation_mode = enabled
         self.update_scene(self._room, self._cabinets, self._selected_cabinet_id, reset_camera=True,
                           placed_products=self._products, selected_product_id=self._selected_product_id)
+        self.plotter.render()
 
     def set_room_walls_visible(self, visible: bool, *, render: bool = True) -> None:
         self._room_walls_visible = visible
@@ -1506,11 +1828,12 @@ class Cabinet3DView(QWidget):
         y0, y1 = -origin_y, self._room.depth - origin_y
         cx = (x0 + x1) / 2
         self.plotter.camera_position = [
-            (x1 + self._room.width * 0.44, y0 - self._room.depth * 0.78, 2820),
-            (cx - self._room.width * 0.04, y1 - 500, 1030),
+            (cx - 630 + self._room.width * 0.18,
+             y0 - self._room.depth * 0.75, self._room.height * 0.96),
+            (cx - 630, y1 - 450, self._room.height * 0.43),
             (0, 0, 1),
         ]
-        self.plotter.camera.view_angle = 30.0
+        self.plotter.camera.view_angle = 41.0
         self.plotter.reset_camera_clipping_range()
         self.plotter.render()
 

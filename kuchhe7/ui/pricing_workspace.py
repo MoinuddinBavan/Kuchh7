@@ -6,7 +6,7 @@ from copy import deepcopy
 from pathlib import Path
 
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QFormLayout, QHBoxLayout,
-                               QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton,
+                               QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea,
                                QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget)
 
 from ..catalogue import CATALOGUE, WARDROBE_CATALOGUE
@@ -63,6 +63,9 @@ class PricingWorkspace:
         self.sheet_length = QLineEdit(); self.sheet_length.setPlaceholderText("Optional, mm")
         self.sheet_width = QLineEdit(); self.sheet_width.setPlaceholderText("Optional, mm")
         self.specification = QLineEdit(); self.specification.setPlaceholderText("Required for approved Board records")
+        self.band_width = QLineEdit(); self.band_width.setPlaceholderText("Edge banding width in mm")
+        self.supplier_reference = QLineEdit()
+        self.record_finish = QLineEdit()
         self.purchase_unit = QComboBox(); self.purchase_unit.addItems(["", *UNITS])
         self.selling_unit = QComboBox(); self.selling_unit.addItems(["", *UNITS])
         for index, (label, widget) in enumerate((("Stable ID", self.record_id), ("Category", self.category),
@@ -73,7 +76,10 @@ class PricingWorkspace:
                               ("Board thickness", self.thickness), ("Sheet length", self.sheet_length),
                               ("Sheet width", self.sheet_width), ("Material specification", self.specification),
                               ("Purchase unit (metadata)", self.purchase_unit),
-                              ("Selling unit (metadata)", self.selling_unit))):
+                              ("Selling unit (metadata)", self.selling_unit),
+                              ("Banding width (mm)", self.band_width),
+                              ("Supplier reference", self.supplier_reference),
+                              ("Finish / colour reference", self.record_finish))):
             (left_form if index % 2 == 0 else right_form).addRow(label, widget)
         layout.addLayout(forms)
         buttons = QHBoxLayout()
@@ -86,9 +92,12 @@ class PricingWorkspace:
             refresh_button = QPushButton("Review latest company prices for this project…")
             refresh_button.clicked.connect(self.on_company_refresh)
             layout.addWidget(refresh_button)
-        self.master_message = QLabel("Board costing uses approved m2 rates by material and thickness; hardware uses approved each rates.")
+        self.master_message = QLabel("Board rates use the selected cost basis; edge banding uses matching material, thickness and width. Unconfigured rates remain incomplete.")
         layout.addWidget(self.master_message)
-        self.master_page.addTab(self.rates_page, "Material & product rates")
+        rates_scroll = QScrollArea()
+        rates_scroll.setWidgetResizable(True)
+        rates_scroll.setWidget(self.rates_page)
+        self.master_page.addTab(rates_scroll, "Material & product rates")
 
     def _build_catalogue_rules(self) -> None:
         self.rules_page = QWidget()
@@ -118,6 +127,20 @@ class PricingWorkspace:
         self.catalogue_width = QLineEdit(); self.catalogue_height = QLineEdit(); self.catalogue_depth = QLineEdit()
         self.catalogue_fixed = QLineEdit(); self.catalogue_markup = QLineEdit(); self.catalogue_margin = QLineEdit()
         self.catalogue_charges = QLineEdit(); self.catalogue_charges.setPlaceholderText("Optional rate_ID=quantity, ...")
+        self.catalogue_basis = QComboBox()
+        for label, basis in (("Finished panel area", "finished_area"),
+                             ("Cut panel area", "cut_area"),
+                             ("Sheets by explicit yield", "sheet_yield"),
+                             ("Cabinet-only nesting sheets", "nesting_sheets")):
+            self.catalogue_basis.addItem(label, basis)
+        self.catalogue_material_wastage = QLineEdit()
+        self.catalogue_edge_wastage = QLineEdit()
+        self.catalogue_overhead = QLineEdit()
+        self.catalogue_sheet_yield = QLineEdit()
+        self.catalogue_sheet_kerf = QLineEdit()
+        self.catalogue_sheet_margin = QLineEdit()
+        self.catalogue_sheet_rotation = QCheckBox("Allow 90-degree rotation where grain permits")
+        self.catalogue_sheet_rotation.setChecked(True)
         for label, widget in (("Rule ID", self.catalogue_rule_id), ("Furniture product", self.catalogue_type),
                               ("Finish", self.catalogue_finish), ("Mode", self.catalogue_mode),
                               ("Currency", self.catalogue_currency), ("Effective date", self.catalogue_date),
@@ -125,7 +148,15 @@ class PricingWorkspace:
                               ("Exact height mm (fixed only)", self.catalogue_height),
                               ("Exact depth mm (fixed only)", self.catalogue_depth),
                               ("Fixed selling price", self.catalogue_fixed), ("Markup %", self.catalogue_markup),
-                              ("Gross margin %", self.catalogue_margin), ("Optional process charges", self.catalogue_charges)):
+                              ("Gross margin %", self.catalogue_margin), ("Optional process charges", self.catalogue_charges),
+                              ("Material cost basis", self.catalogue_basis),
+                              ("Material wastage %", self.catalogue_material_wastage),
+                              ("Edge wastage %", self.catalogue_edge_wastage),
+                              ("Overhead %", self.catalogue_overhead),
+                              ("Sheet yield %", self.catalogue_sheet_yield),
+                              ("Nesting kerf mm", self.catalogue_sheet_kerf),
+                              ("Nesting edge margin mm", self.catalogue_sheet_margin),
+                              ("Nesting rotation", self.catalogue_sheet_rotation)):
             form.addRow(label, widget)
         layout.addLayout(form)
         buttons = QHBoxLayout()
@@ -136,16 +167,19 @@ class PricingWorkspace:
         self.rule_message = QLabel("No selling rule is assumed until an approved rule is configured.")
         self.rule_message.setWordWrap(True)
         layout.addWidget(self.rule_message)
-        self.master_page.addTab(self.rules_page, "Catalogue selling rules")
+        rules_scroll = QScrollArea()
+        rules_scroll.setWidgetResizable(True)
+        rules_scroll.setWidget(self.rules_page)
+        self.master_page.addTab(rules_scroll, "Catalogue selling rules")
 
     def _build_cost(self) -> None:
         layout = QVBoxLayout(self.cost_page)
-        layout.addWidget(QLabel("Draft component cost from the current illustrative BOM. No wastage, labour or margin is assumed."))
+        layout.addWidget(QLabel("Draft cost from the current BOM and selected pricing rule. Wastage, operations and overhead apply only when configured."))
         self.cost_cabinet = QLabel("No cabinet selected")
         self.cost_cabinet.setObjectName("canvasTitle")
         layout.addWidget(self.cost_cabinet)
-        self.cost_table = QTableWidget(0, 9)
-        self.cost_table.setHorizontalHeaderLabels(["Component / charge", "Material / product key", "Specification", "Rate ID", "Calculation", "Qty / units", "Rate", "Amount", "Currency"])
+        self.cost_table = QTableWidget(0, 11)
+        self.cost_table.setHorizontalHeaderLabels(["Component / charge", "Category", "BOM part IDs", "Material / product key", "Specification", "Rate ID", "Calculation", "Qty / units", "Rate", "Amount", "Currency"])
         self.cost_table.setAlternatingRowColors(True)
         self.cost_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.cost_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
@@ -242,14 +276,20 @@ class PricingWorkspace:
                             hardware_assignments=self.project.hardware_assignments,
                             charge_quantities=rule.charge_quantities,
                             currency=self.project.quotation.currency,
-                            as_of=self.project.quotation.quotation_date)
+                            as_of=self.project.quotation.quotation_date, policy=rule)
         self.cost_table.setRowCount(len(cost.lines))
         for row, line in enumerate(cost.lines):
-            for col, value in enumerate((line.component, line.match_key, line.specification,
-                                         line.source_id, line.calculation, str(line.quantity),
-                                         str(line.rate), str(line.amount), line.currency)):
+            for col, value in enumerate((line.component, line.cost_category,
+                                         ", ".join(line.source_part_ids), line.match_key,
+                                         line.specification, line.source_id, line.calculation,
+                                         str(line.quantity), str(line.rate), str(line.amount), line.currency)):
                 self.cost_table.setItem(row, col, QTableWidgetItem(value))
-        self.cost_total.setText(f"BOM rate coverage {cost.status} — component subtotal {cost.total if cost.total is not None else 'pending'} {cost.currency}")
+        self.cost_total.setText(
+            f"BOM rate coverage {cost.status} — {cost.material_basis} subtotal "
+            f"{cost.total if cost.total is not None else 'pending'} {cost.currency}\n"
+            f"Construction {cost.profile_id}/{cost.profile_revision} · Price Master {cost.price_master_revision}"
+        )
+        self.cost_total.setWordWrap(True)
         self.cost_warning.setText("\n".join(cost.missing) if cost.missing else "BOM-based component subtotal; omitted categories are not assumed.")
         price, reason = selling_price(cost, rule, currency=self.project.quotation.currency)
         self.sell_preview.setText(
@@ -275,12 +315,20 @@ class PricingWorkspace:
                               (self.catalogue_height, rule.height_mm or ""), (self.catalogue_depth, rule.depth_mm or ""),
                               (self.catalogue_fixed, rule.fixed_price), (self.catalogue_markup, rule.markup_percent),
                               (self.catalogue_margin, rule.gross_margin_percent),
-                              (self.catalogue_charges, ", ".join(f"{key}={value}" for key, value in rule.charge_quantities.items()))):
+                              (self.catalogue_charges, ", ".join(f"{key}={value}" for key, value in rule.charge_quantities.items())),
+                              (self.catalogue_material_wastage, rule.material_wastage_percent),
+                              (self.catalogue_edge_wastage, rule.edge_wastage_percent),
+                              (self.catalogue_overhead, rule.overhead_percent),
+                              (self.catalogue_sheet_yield, rule.sheet_yield_percent),
+                              (self.catalogue_sheet_kerf, rule.sheet_kerf_mm),
+                              (self.catalogue_sheet_margin, rule.sheet_margin_mm)):
             widget.setText(str(value))
         self.catalogue_type.setCurrentIndex(self.catalogue_type.findData(rule.type_id))
         self.catalogue_finish.setCurrentText(rule.material or "Any supported finish")
         self.catalogue_mode.setCurrentText(rule.mode)
         self.catalogue_status.setCurrentText(rule.status)
+        self.catalogue_basis.setCurrentIndex(max(0, self.catalogue_basis.findData(rule.cost_basis)))
+        self.catalogue_sheet_rotation.setChecked(rule.sheet_allow_rotation)
 
     def apply_catalogue_rule(self) -> None:
         if self.project is None:
@@ -295,7 +343,15 @@ class PricingWorkspace:
                 depth_mm=int(self.catalogue_depth.text() or 0), fixed_price=self.catalogue_fixed.text().strip(),
                 markup_percent=self.catalogue_markup.text().strip(),
                 gross_margin_percent=self.catalogue_margin.text().strip(),
-                charge_quantities=self._parse_charges(self.catalogue_charges.text()))
+                charge_quantities=self._parse_charges(self.catalogue_charges.text()),
+                cost_basis=self.catalogue_basis.currentData(),
+                material_wastage_percent=self.catalogue_material_wastage.text().strip(),
+                edge_wastage_percent=self.catalogue_edge_wastage.text().strip(),
+                overhead_percent=self.catalogue_overhead.text().strip(),
+                sheet_yield_percent=self.catalogue_sheet_yield.text().strip(),
+                sheet_kerf_mm=self.catalogue_sheet_kerf.text().strip(),
+                sheet_margin_mm=self.catalogue_sheet_margin.text().strip(),
+                sheet_allow_rotation=self.catalogue_sheet_rotation.isChecked())
             candidate = deepcopy(self.project.price_master)
             candidate.catalogue_rules = [item for item in candidate.catalogue_rules if item.rule_id != rule.rule_id] + [rule]
             candidate.validate()
@@ -325,7 +381,10 @@ class PricingWorkspace:
                               (self.currency, record.currency), (self.effective_date, record.effective_date),
                               (self.thickness, record.thickness_mm), (self.sheet_length, record.sheet_length_mm),
                               (self.sheet_width, record.sheet_width_mm),
-                              (self.specification, record.specification)):
+                              (self.specification, record.specification),
+                              (self.band_width, record.band_width_mm),
+                              (self.supplier_reference, record.supplier_reference),
+                              (self.record_finish, record.finish)):
             widget.setText(value)
         self.category.setCurrentText(record.category)
         self.unit.setCurrentText(record.unit)
@@ -341,7 +400,9 @@ class PricingWorkspace:
                              self.currency.text().strip(), self.effective_date.text().strip(), self.status.currentText(),
                              self.thickness.text().strip(), self.sheet_length.text().strip(),
                              self.sheet_width.text().strip(), self.specification.text().strip(),
-                             self.purchase_unit.currentText(), self.selling_unit.currentText())
+                             self.purchase_unit.currentText(), self.selling_unit.currentText(),
+                             self.band_width.text().strip(), self.supplier_reference.text().strip(),
+                             self.record_finish.text().strip())
         try:
             candidate = deepcopy(self.project.price_master)
             candidate.records = [row for row in candidate.records if row.record_id != record.record_id] + [record]

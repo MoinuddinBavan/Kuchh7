@@ -13,6 +13,7 @@ datas = [
     (str(release_root / "MACOS_BUILD.md"), "."),
     (str(release_root / "FIVE_MINUTE_DEMO.md"), "."),
     (str(project_root / "demo_output" / "complete-kitchen.json"), "samples"),
+    (str(project_root / "kuchhe7" / "ui" / "cabinet_previews"), "kuchhe7/ui/cabinet_previews"),
     (str(release_root / "assets" / "kuche7-icon.svg"), "assets"),
 ]
 licenses = release_root / "licenses"

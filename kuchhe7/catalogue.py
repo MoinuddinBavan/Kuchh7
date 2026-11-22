@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from copy import deepcopy
 
 
 FINISHES = (
@@ -56,6 +57,7 @@ class CatalogueItem:
     min_depth: int = 200
     max_depth: int = 1200
     hardware_defaults: dict[str, int] = field(default_factory=dict)
+    construction_profile: dict | None = None
 
 
 CATALOGUE = (
@@ -173,4 +175,5 @@ def create_catalogue_cabinet(type_id: str, cabinet_id: str, *, position_x: int =
         position_x=position_x,
         position_y=0 if position_y is None else position_y,
         elevation_z=item.elevation_z,
+        construction_profile=deepcopy(item.construction_profile),
     )

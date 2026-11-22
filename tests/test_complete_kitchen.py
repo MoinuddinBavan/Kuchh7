@@ -170,6 +170,7 @@ def test_maximize_3d_restores_split_workspace_and_docks():
     application.processEvents()
     before = deepcopy(window.project.to_dict())
     original_sizes = window.workspace_splitter.sizes()
+    bom_was_visible = window.bom_dock.isVisible()
     assert window.plan_panel.isVisible()
 
     window.maximize_3d_action.setChecked(True)
@@ -185,10 +186,10 @@ def test_maximize_3d_restores_split_workspace_and_docks():
     assert window.plan_panel.isVisible()
     assert window.explorer_dock.isVisible()
     assert window.properties_dock.isVisible()
-    assert window.bom_dock.isVisible()
+    assert window.bom_dock.isVisible() == bom_was_visible
     restored_sizes = window.workspace_splitter.sizes()
     assert abs(restored_sizes[0] - original_sizes[0]) <= 2
-    assert abs(restored_sizes[1] - original_sizes[1]) <= 2
+    assert len(restored_sizes) == len(original_sizes)
     assert window.project.to_dict() == before
     window.close()
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 
 from .price_master import PriceMaster, nonnegative_decimal
 from .product_libraries import get_product
@@ -22,6 +22,14 @@ class PricingRule:
     markup_percent: str = ""
     gross_margin_percent: str = ""
     charge_quantities: dict[str, str] = field(default_factory=dict)
+    cost_basis: str = "finished_area"
+    material_wastage_percent: str = ""
+    edge_wastage_percent: str = ""
+    overhead_percent: str = ""
+    sheet_yield_percent: str = ""
+    sheet_kerf_mm: str = ""
+    sheet_margin_mm: str = ""
+    sheet_allow_rotation: bool = True
 
     def validate(self) -> None:
         if self.mode not in PRICING_MODES:
@@ -38,6 +46,25 @@ class PricingRule:
             if not record_id.strip():
                 raise ValueError("Charge record ID is required.")
             nonnegative_decimal(quantity, f"Charge quantity for {record_id}")
+        if self.cost_basis not in ("finished_area", "cut_area", "sheet_yield", "nesting_sheets"):
+            raise ValueError("Unsupported material cost basis.")
+        for label, value in (("Material wastage", self.material_wastage_percent),
+                             ("Edge wastage", self.edge_wastage_percent),
+                             ("Overhead", self.overhead_percent)):
+            if value and nonnegative_decimal(value, label) > 100:
+                raise ValueError(f"{label} percentage must not exceed 100.")
+        if self.cost_basis == "sheet_yield" and (not self.sheet_yield_percent or
+                not 0 < nonnegative_decimal(self.sheet_yield_percent, "Sheet yield") <= 100):
+            raise ValueError("Sheet estimate needs an explicit yield between 0 and 100%.")
+        if self.cost_basis in ("sheet_yield", "nesting_sheets") and self.material_wastage_percent:
+            raise ValueError("Sheet costing already includes layout allowance; do not add material wastage twice.")
+        if self.cost_basis == "nesting_sheets":
+            if not self.sheet_kerf_mm or not self.sheet_margin_mm:
+                raise ValueError("Nesting-sheet costing requires explicit kerf and edge margin.")
+            nonnegative_decimal(self.sheet_kerf_mm, "Nesting kerf")
+            nonnegative_decimal(self.sheet_margin_mm, "Nesting margin")
+        if not isinstance(self.sheet_allow_rotation, bool):
+            raise ValueError("Sheet rotation setting must be a boolean.")
 
 
 @dataclass(frozen=True)
@@ -52,6 +79,9 @@ class CostLine:
     calculation: str
     match_key: str = ""
     specification: str = ""
+    source_part_ids: tuple[str, ...] = ()
+    cost_category: str = ""
+    supplier_reference: str = ""
 
 
 @dataclass(frozen=True)
@@ -61,6 +91,10 @@ class CabinetCost:
     total: Decimal | None
     currency: str
     missing: tuple[str, ...]
+    profile_id: str = "LEGACY-DEMO"
+    profile_revision: str = "legacy"
+    price_master_revision: str = ""
+    material_basis: str = "finished_area"
 
     @property
     def status(self) -> str:
@@ -69,20 +103,27 @@ class CabinetCost:
 
 def cost_cabinet(cabinet, master: PriceMaster, *, hardware_assignments=(),
                  charge_quantities: dict[str, str] | None = None,
-                 currency: str = "", as_of: str | None = None) -> CabinetCost:
-    """Cost BOM rectangles by m2 and BOM hardware by each; no wastage assumed.
+                 currency: str = "", as_of: str | None = None,
+                 policy: PricingRule | None = None) -> CabinetCost:
+    """Cost the authoritative BOM using an explicit selling-rule material basis.
 
-    Sheet-priced boards remain incomplete: proportional sheet allocation would
-    falsely imply a purchase/wastage rule. Extra charges need explicit units.
+    Default finished-area costing preserves the older demonstration workflow.
+    Sheet options are cabinet-isolated estimates, not shared project purchases.
     """
     from .bom import generate_bom
+    from .nesting import SheetSettings, expand_panel_instances, nest_panels
+    from .pricing_refresh import master_revision
 
     master.validate()
+    policy = policy or PricingRule()
+    policy.validate()
+    basis = policy.cost_basis
     lines: list[CostLine] = []
     missing: list[str] = []
     result_currency = currency
 
-    def append(component: str, record, quantity: Decimal, calculation: str) -> None:
+    def append(component: str, record, quantity: Decimal, calculation: str,
+               part_ids: tuple[str, ...] = ()) -> None:
         nonlocal result_currency
         if record is None:
             missing.append(f"{component}: approved rate missing")
@@ -94,7 +135,16 @@ def cost_cabinet(cabinet, master: PriceMaster, *, hardware_assignments=(),
         rate = nonnegative_decimal(record.rate, f"Rate {record.record_id}")
         amount = (quantity * rate).quantize(MONEY, rounding=ROUND_HALF_UP)
         lines.append(CostLine(component, record.record_id, record.unit, quantity, rate, amount,
-                              record.currency, calculation, record.match_key, record.specification))
+                              record.currency, calculation, record.match_key, record.specification,
+                              part_ids, record.category, record.supplier_reference))
+
+    def allowance(label: str, record, quantity: Decimal, percent: str,
+                  part_ids: tuple[str, ...]) -> None:
+        if record is not None and percent:
+            rate = nonnegative_decimal(percent, label)
+            if rate:
+                append(label, record, quantity * rate / 100,
+                       f"explicit {rate}% of {quantity} {record.unit}", part_ids)
 
     components = generate_bom(cabinet)
     automatic = {row.name: row.quantity for row in components if row.material == "Hardware"}
@@ -113,43 +163,116 @@ def cost_cabinet(cabinet, master: PriceMaster, *, hardware_assignments=(),
                 missing.append(f"{definition.name}: rate unit must be each")
             else:
                 append(definition.name, record, Decimal(assignment.quantity),
-                       f"assigned {assignment.quantity} × {assignment.type_id}")
+                       f"assigned {assignment.quantity} x {assignment.type_id}",
+                       (f"{cabinet.cabinet_id}:ASSIGN:{assignment.assignment_id}",))
     for name, assigned_quantity in assigned_auto.items():
         if assigned_quantity != automatic.get(name, 0):
             missing.append(f"{name}: assigned {assigned_quantity} differs from BOM {automatic.get(name, 0)}; reconcile before costing")
 
-    for component in components:
+    panel_groups: dict[tuple[str, float], list[tuple[object, str]]] = {}
+    for ordinal, component in enumerate(components, 1):
+        part_id = f"{cabinet.cabinet_id}-P{ordinal:02d}"
         if component.material == "Hardware":
             record = master.approved("Hardware", component.name, as_of=as_of)
             if record is not None and record.unit != "each":
                 missing.append(f"{component.name}: rate unit must be each")
             else:
                 append(component.name, record, Decimal(component.quantity),
-                       f"BOM {component.quantity} each; matching assignments are not added again")
+                       f"BOM {component.quantity} each; matching assignments are not added again",
+                       (part_id,))
             continue
-        record = master.approved("Board", component.material, component.thickness_mm, as_of=as_of)
-        if record is not None and record.unit != "m2":
-            missing.append(f"{component.name}: {record.unit} board rate needs an approved conversion rule")
-            continue
-        quantity = (Decimal(str(component.length_mm)) * Decimal(str(component.width_mm))
-                    * component.quantity / Decimal("1000000"))
-        append(component.name, record, quantity,
-               f"{component.length_mm:g} × {component.width_mm:g} mm × {component.quantity} / 1,000,000 m2")
+        panel_groups.setdefault((component.material, component.thickness_mm), []).append((component, part_id))
+        if basis in ("finished_area", "cut_area"):
+            length = component.length_mm if basis == "finished_area" else (
+                component.cut_length_mm if component.cut_length_mm is not None else component.length_mm)
+            width = component.width_mm if basis == "finished_area" else (
+                component.cut_width_mm if component.cut_width_mm is not None else component.width_mm)
+            record = master.approved("Board", component.material, component.thickness_mm,
+                                     as_of=as_of, unit="m2")
+            if record is None:
+                other = master.approved("Board", component.material, component.thickness_mm, as_of=as_of)
+                if other is not None:
+                    missing.append(f"{component.name}: {other.unit} board rate needs an approved conversion rule")
+            quantity = (Decimal(str(length)) * Decimal(str(width)) * component.quantity
+                        / Decimal("1000000"))
+            if record is not None or master.approved("Board", component.material, component.thickness_mm,
+                                                      as_of=as_of) is None:
+                append(component.name, record, quantity,
+                       f"{basis}: {length:g} x {width:g} mm x {component.quantity} / 1,000,000 m2",
+                       (part_id,))
+            allowance(f"Material wastage: {component.name}", record, quantity,
+                      policy.material_wastage_percent, (part_id,))
+        for band in component.edge_banding:
+            record = master.approved("Edge banding", band.material, band.thickness_mm,
+                                     as_of=as_of, band_width_mm=band.width_mm, unit="m")
+            edge_length = component.length_mm if band.edge in ("front", "back") else component.width_mm
+            quantity = Decimal(str(edge_length)) * component.quantity / 1000
+            if record is None:
+                missing.append(f"{part_id} {band.edge}: approved {band.material} {band.thickness_mm:g} x {band.width_mm:g} mm edge rate missing")
+            else:
+                append(f"{component.name} {band.edge} edge", record, quantity,
+                       f"BOM {edge_length:g} mm x {component.quantity} / 1,000 m", (part_id,))
+                allowance(f"Edge wastage: {component.name} {band.edge}", record,
+                          quantity, policy.edge_wastage_percent, (part_id,))
+
+    if basis in ("sheet_yield", "nesting_sheets"):
+        for (material, thickness), entries in panel_groups.items():
+            record = master.approved("Board", material, thickness, as_of=as_of, unit="sheet")
+            part_ids = tuple(part_id for _, part_id in entries)
+            if record is None:
+                missing.append(f"{material} {thickness:g} mm: approved per-sheet rate missing")
+                continue
+            sheet_area = Decimal(record.sheet_length_mm) * Decimal(record.sheet_width_mm)
+            panels = [component for component, _ in entries]
+            if basis == "sheet_yield":
+                cut_area = sum((Decimal(str(c.cut_length_mm if c.cut_length_mm is not None else c.length_mm))
+                                * Decimal(str(c.cut_width_mm if c.cut_width_mm is not None else c.width_mm))
+                                * c.quantity for c in panels), Decimal(0))
+                effective_area = sheet_area * nonnegative_decimal(policy.sheet_yield_percent, "Sheet yield") / 100
+                sheets = (cut_area / effective_area).to_integral_value(rounding=ROUND_CEILING)
+                detail = f"cabinet sheet estimate; cut area {cut_area} mm2 / explicit {policy.sheet_yield_percent}% yield"
+            else:
+                settings = SheetSettings(
+                    length_mm=float(record.sheet_length_mm), width_mm=float(record.sheet_width_mm),
+                    kerf_mm=float(policy.sheet_kerf_mm), margin_mm=float(policy.sheet_margin_mm),
+                    allow_rotation=policy.sheet_allow_rotation)
+                layout = nest_panels(expand_panel_instances(panels), settings)
+                if layout.unplaced_count:
+                    missing.append(f"{material} {thickness:g} mm: {layout.unplaced_count} panels unplaced in cabinet-isolated nesting")
+                    continue
+                sheets = Decimal(layout.sheet_count)
+                detail = (f"cabinet-isolated demonstration nesting: {layout.sheet_count} sheets; "
+                          f"kerf {policy.sheet_kerf_mm} mm, margin {policy.sheet_margin_mm} mm")
+            append(f"Board sheets: {material} {thickness:g} mm", record, sheets, detail, part_ids)
 
     for record_id, raw_quantity in (charge_quantities or {}).items():
         quantity = nonnegative_decimal(raw_quantity, f"Charge quantity for {record_id}")
         record = next((row for row in master.records if row.record_id == record_id
                        and row.status == "approved" and row.effective_date <= (as_of or date.today().isoformat())
-                       and row.category in ("Labour", "Machining", "Finishing")), None)
+                       and row.category in ("Labour", "Machining", "Finishing", "Installation",
+                                            "Transport", "Handling", "Packaging", "Overhead")), None)
         if record is not None and record.unit not in ("each", "hour"):
             missing.append(f"{record_id}: charge unit must be each or hour")
         else:
             append(f"Optional charge {record_id}", record, quantity,
                    f"explicit {quantity} {record.unit if record else 'units'}")
 
+    if policy.overhead_percent:
+        if any(row.record_id in (charge_quantities or {}) and row.category == "Overhead"
+               for row in master.records):
+            missing.append("Overhead is configured both as a percentage and an explicit charge.")
+        else:
+            percentage = nonnegative_decimal(policy.overhead_percent, "Overhead")
+            base = sum((line.amount for line in lines), Decimal("0.00"))
+            amount = (base * percentage / 100).quantize(MONEY, rounding=ROUND_HALF_UP)
+            lines.append(CostLine("Configured overhead", "PRICING-RULE", "%", base, percentage,
+                                  amount, result_currency, f"explicit {percentage}% of cost subtotal",
+                                  cost_category="Overhead"))
     total = sum((line.amount for line in lines), Decimal("0.00")).quantize(MONEY)
+    snapshot = cabinet.construction_profile or {}
     return CabinetCost(cabinet.cabinet_id, tuple(lines), None if missing else total,
-                       result_currency, tuple(missing))
+                       result_currency, tuple(missing), snapshot.get("profile_id", "LEGACY-DEMO"),
+                       snapshot.get("revision", "legacy"), master_revision(master), basis)
 
 
 def selling_price(cost: CabinetCost, rule: PricingRule, *, currency: str = "") -> tuple[Decimal | None, str]:

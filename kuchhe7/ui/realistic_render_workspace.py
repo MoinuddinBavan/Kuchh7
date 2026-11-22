@@ -31,12 +31,15 @@ class _RenderWorker(QObject):
 
 
 class RealisticRenderWorkspace(QWidget):
-    def __init__(self, view3d, project_fingerprint_callback=None, capture_callback=None, parent=None) -> None:
+    def __init__(self, view3d, project_fingerprint_callback=None, capture_callback=None, parent=None,
+                 *, context_callback=None) -> None:
         super().__init__(parent)
         self.view3d = view3d
         self._project_fingerprint_callback = project_fingerprint_callback
         self._capture_callback = capture_callback or (lambda camera: capture_view_png(view3d, camera))
+        self._context_callback = context_callback
         self._captured_fingerprint: str | None = None
+        self._captured_context = ""
         self.source_png: bytes | None = None
         self.result_png: bytes | None = None
         self._thread: QThread | None = None
@@ -51,10 +54,12 @@ class RealisticRenderWorkspace(QWidget):
         options = QFormLayout()
         self.camera_combo = QComboBox()
         self.camera_combo.addItems(("Current", "Front", "Isometric", "Presentation"))
+        self.camera_combo.setCurrentText("Presentation")
         self.provider_combo = QComboBox()
         self.provider_combo.addItem("Automatic / configured", "")
         self.provider_combo.addItem("Google Gemini", "gemini")
         self.provider_combo.addItem("OpenAI", "openai")
+        self.provider_combo.addItem("Cloudflare Workers AI", "cloudflare")
         self.provider_combo.currentIndexChanged.connect(lambda _index: self.refresh_provider_status())
         self.style_combo = QComboBox()
         self.style_combo.addItems(STYLES)
@@ -71,7 +76,7 @@ class RealisticRenderWorkspace(QWidget):
         self.capture_button.clicked.connect(self.capture)
         self.generate_button = QPushButton("Generate AI render")
         self.generate_button.setStyleSheet(
-            "QPushButton:disabled { color: #829098; background: #E4E9EC; border-color: #CAD3D8; }"
+            "QPushButton:disabled { color: #8E918D; background: #EAE7E0; border-color: #D9D2C8; }"
         )
         self.generate_button.clicked.connect(self.generate)
         self.save_button = QPushButton("Save displayed image…")
@@ -98,7 +103,7 @@ class RealisticRenderWorkspace(QWidget):
             image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             image_label.setWordWrap(True)
             image_label.setMinimumSize(330, 250)
-            image_label.setStyleSheet("background: #E8EDF0; border: 1px solid #C9D3D9; color: #425765;")
+            image_label.setStyleSheet("background: #F1EEE8; border: 1px solid #D9D2C8; color: #59645E;")
             panel_layout.addWidget(image_label, 1)
             comparison.addWidget(panel)
         comparison.setSizes([600, 600])
@@ -153,6 +158,7 @@ class RealisticRenderWorkspace(QWidget):
             self._captured_fingerprint = (
                 self._project_fingerprint_callback() if self._project_fingerprint_callback else None
             )
+            self._captured_context = self._context_callback() if self._context_callback else ""
             self.result_png = None
             self._show_image(self.before_label, self.source_png)
             self.after_label.clear()
@@ -166,6 +172,7 @@ class RealisticRenderWorkspace(QWidget):
             self.source_png = None
             self.result_png = None
             self._captured_fingerprint = None
+            self._captured_context = ""
             self.generate_button.setEnabled(False)
             self.save_button.setEnabled(False)
             self.status_label.setText(f"3D capture failed: {error}")
@@ -184,14 +191,15 @@ class RealisticRenderWorkspace(QWidget):
                 self.refresh_provider_status()
                 return False
             request = RenderRequest(self.source_png, self.style_combo.currentText(),
-                                    self.instructions.toPlainText().strip())
+                                    self.instructions.toPlainText().strip(), self._captured_context)
             request.validate()
         except ValueError as error:
             self.status_label.setText(str(error))
             return False
         answer = QMessageBox.question(
             self, "Send design image to external provider?",
-            f"This sends the current 3D capture and your presentation instructions to {provider.name}. "
+            f"This sends the current 3D capture, cabinet finishes, room-opening details and your "
+            f"presentation instructions to {provider.name}. "
             "The image may reveal a client layout and the request may incur charges. Continue?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,

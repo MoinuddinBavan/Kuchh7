@@ -58,14 +58,17 @@ class PriceRefreshPreview:
 
 
 def _rate_value(row) -> str:
-    return f"{row.rate} {row.currency}/{row.unit} ({row.match_key})"
+    detail = f", band {row.thickness_mm} x {row.band_width_mm} mm" if row.category == "Edge banding" else ""
+    return f"{row.rate} {row.currency}/{row.unit} ({row.match_key}{detail})"
 
 
 def _rule_value(row) -> str:
     value = (f"{row.fixed_price} {row.currency} for {row.width_mm}x{row.height_mm}x{row.depth_mm} mm"
              if row.mode == "fixed" else
              f"{row.markup_percent or row.gross_margin_percent}% {'markup' if row.markup_percent else 'margin'} {row.currency}")
-    return f"{value} ({row.type_id}, {row.material or 'any finish'})"
+    return (f"{value} ({row.type_id}, {row.material or 'any finish'}; "
+            f"basis {row.cost_basis}; material waste {row.material_wastage_percent or 'none'}%; "
+            f"edge waste {row.edge_wastage_percent or 'none'}%; overhead {row.overhead_percent or 'none'}%)")
 
 
 def _diff_rows(kind: str, old_rows, new_rows, id_field: str, formatter) -> list[PriceChange]:

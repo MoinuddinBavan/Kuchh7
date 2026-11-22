@@ -44,6 +44,20 @@ def placement_error(room: Room, cabinets: list[Cabinet], candidate: Cabinet,
             return f"{candidate.cabinet_id} overlaps {other.cabinet_id} in 3D. Adjust its position."
     for product in products or []:
         if volumes_intersect(candidate, product):
+            if product.type_id == "small_sculpture":
+                from .catalogue import get_catalogue_item
+
+                if get_catalogue_item(candidate.cabinet_type_id).front_style == "open":
+                    t = candidate.board_thickness
+                    tops = [candidate.elevation_z + t
+                            + (candidate.height - 2 * t) * (index + 1) / (candidate.shelf_count + 1)
+                            + t / 2 for index in range(candidate.shelf_count)]
+                    if (product.position_x >= candidate.position_x
+                            and product.position_y >= candidate.position_y
+                            and product.position_x + product.footprint_width <= candidate.position_x + candidate.footprint_width
+                            and product.position_y + product.footprint_depth <= candidate.position_y + candidate.footprint_depth
+                            and any(abs(product.elevation_z - top) <= 8 for top in tops)):
+                        continue
             return f"{candidate.cabinet_id} overlaps product {product.item_id} in 3D."
     for opening in room.openings:
         conflict = opening_furniture_conflict(room, opening, candidate)
@@ -60,8 +74,46 @@ def product_placement_error(
         candidate.validate(room)
     except ValueError as error:
         return str(error)
+    from .product_libraries import CURATED_PROP_IDS
+    from .catalogue import get_catalogue_item
+
+    support = None
+    if candidate.type_id in CURATED_PROP_IDS:
+        if candidate.type_id == "floor_plant":
+            if candidate.elevation_z != 0:
+                return "Floor Plant must rest on the floor (elevation 0 mm)."
+        else:
+            for cabinet in cabinets:
+                fits = (candidate.position_x >= cabinet.position_x
+                        and candidate.position_y >= cabinet.position_y
+                        and candidate.position_x + candidate.footprint_width
+                        <= cabinet.position_x + cabinet.footprint_width
+                        and candidate.position_y + candidate.footprint_depth
+                        <= cabinet.position_y + cabinet.footprint_depth)
+                if not fits:
+                    continue
+                if candidate.type_id == "small_sculpture":
+                    if get_catalogue_item(cabinet.cabinet_type_id).front_style != "open":
+                        continue
+                    thickness = cabinet.board_thickness
+                    shelf_tops = [cabinet.elevation_z + thickness
+                                  + (cabinet.height - 2 * thickness) * (index + 1) / (cabinet.shelf_count + 1)
+                                  + thickness / 2
+                                  for index in range(cabinet.shelf_count)]
+                    if any(abs(candidate.elevation_z - top) <= 8 for top in shelf_tops):
+                        support = cabinet
+                        break
+                elif (cabinet.elevation_z == 0
+                      and get_catalogue_item(cabinet.cabinet_type_id).front_style != "open"
+                      and 0 <= candidate.elevation_z - (cabinet.elevation_z + cabinet.height) <= 40):
+                    support = cabinet
+                    break
+            if support is None:
+                return (f"{candidate.item_id} needs a supporting "
+                        + ("open cabinet shelf." if candidate.type_id == "small_sculpture"
+                           else "cabinet countertop."))
     for cabinet in cabinets:
-        if volumes_intersect(candidate, cabinet):
+        if cabinet is not support and volumes_intersect(candidate, cabinet):
             return f"{candidate.item_id} overlaps cabinet {cabinet.cabinet_id} in 3D."
     for other in products:
         if other.item_id == candidate.item_id or not volumes_intersect(candidate, other):

@@ -11,6 +11,7 @@ datas = [
     (str(project_root / "release" / "RELEASE_CHECKLIST.md"), "."),
     (str(project_root / "release" / "BUILD_REPORT.md"), "."),
     (str(project_root / "demo_output" / "complete-kitchen.json"), "samples"),
+    (str(project_root / "kuchhe7" / "ui" / "cabinet_previews"), "kuchhe7/ui/cabinet_previews"),
 ]
 licenses = project_root / "release" / "licenses"
 if licenses.exists():

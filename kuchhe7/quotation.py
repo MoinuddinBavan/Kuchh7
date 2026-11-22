@@ -108,7 +108,15 @@ def resolve_cabinet_pricing_rule(project, cabinet) -> tuple[PricingRule | None, 
     return PricingRule(mode=source.mode, approved=True, fixed_price=source.fixed_price,
                        markup_percent=source.markup_percent,
                        gross_margin_percent=source.gross_margin_percent,
-                       charge_quantities=source.charge_quantities), f"Price Setup rule {source.rule_id}"
+                       charge_quantities=source.charge_quantities,
+                       cost_basis=source.cost_basis,
+                       material_wastage_percent=source.material_wastage_percent,
+                       edge_wastage_percent=source.edge_wastage_percent,
+                       overhead_percent=source.overhead_percent,
+                       sheet_yield_percent=source.sheet_yield_percent,
+                       sheet_kerf_mm=source.sheet_kerf_mm,
+                       sheet_margin_mm=source.sheet_margin_mm,
+                       sheet_allow_rotation=source.sheet_allow_rotation), f"Price Setup rule {source.rule_id}"
 
 
 def calculate_quotation(project: object) -> QuoteSummary:
@@ -135,7 +143,7 @@ def calculate_quotation(project: object) -> QuoteSummary:
                                     hardware_assignments=project.hardware_assignments,
                                     charge_quantities=rule.charge_quantities,
                                     currency=settings.currency,
-                                    as_of=settings.quotation_date)
+                                    as_of=settings.quotation_date, policy=rule)
                 price, reason = selling_price(cost, rule, currency=settings.currency)
                 if reason:
                     incomplete.append(f"{item_id}: {reason}")

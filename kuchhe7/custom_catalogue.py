@@ -6,6 +6,8 @@ import json
 import os
 import re
 from dataclasses import asdict, replace
+from copy import deepcopy
+from types import SimpleNamespace
 from pathlib import Path
 
 from PySide6.QtCore import QStandardPaths
@@ -64,6 +66,12 @@ def validate_custom_item(item: CatalogueItem) -> None:
         raise ValueError("Only optional bar-handle assignments are supported in custom templates.")
     if any(not isinstance(qty, int) or qty < 1 or qty > 20 for qty in item.hardware_defaults.values()):
         raise ValueError("Handle quantity must be between 1 and 20.")
+    if item.construction_profile is not None:
+        from .construction import ConstructionProfile
+        ConstructionProfile.from_dict(item.construction_profile).validate_for(SimpleNamespace(
+            cabinet_type_id=item.type_id, width=item.width, height=item.height,
+            depth=item.depth, board_thickness=item.board_thickness,
+        ))
 
 
 def create_custom_revision(items: list[CatalogueItem], *, product_id: str, name: str,
@@ -71,7 +79,8 @@ def create_custom_revision(items: list[CatalogueItem], *, product_id: str, name:
                            board_thickness: int, door_count: int, drawer_count: int,
                            shelf_count: int, default_finish: str,
                            min_width: int, max_width: int, min_height: int, max_height: int,
-                           min_depth: int, max_depth: int, handle_quantity: int = 0) -> CatalogueItem:
+                           min_depth: int, max_depth: int, handle_quantity: int = 0,
+                           construction_profile: dict | None = None) -> CatalogueItem:
     if template_id not in BASE_TEMPLATES:
         raise ValueError("Unknown construction template.")
     existing = [item for item in items if item.product_id.casefold() == product_id.casefold()]
@@ -79,6 +88,9 @@ def create_custom_revision(items: list[CatalogueItem], *, product_id: str, name:
         raise ValueError("Product ID differs only by letter case from an existing product.")
     revision = max((item.revision for item in existing), default=0) + 1
     template = BASE_TEMPLATES[template_id]
+    profile_snapshot = deepcopy(construction_profile)
+    if profile_snapshot is not None:
+        profile_snapshot["cabinet_type_id"] = f"custom_{product_id.lower()}__v{revision}"
     item = replace(template, type_id=f"custom_{product_id.lower()}__v{revision}",
                    product_id=product_id, revision=revision, name=name.strip(),
                    template_id=template_id, width=width, height=height, depth=depth,
@@ -87,7 +99,8 @@ def create_custom_revision(items: list[CatalogueItem], *, product_id: str, name:
                    default_finish=default_finish, min_width=min_width, max_width=max_width,
                    min_height=min_height, max_height=max_height,
                    min_depth=min_depth, max_depth=max_depth,
-                   hardware_defaults={"handle_bar": handle_quantity} if handle_quantity else {})
+                   hardware_defaults={"handle_bar": handle_quantity} if handle_quantity else {},
+                   construction_profile=profile_snapshot)
     validate_custom_item(item)
     return item
 

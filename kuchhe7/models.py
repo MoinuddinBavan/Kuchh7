@@ -118,6 +118,9 @@ class Cabinet:
     cabinet_type_id: str = "base_2_door"
     elevation_z: int = 0
     orientation_degrees: int = 0
+    # None keeps the historical demonstration BOM exactly as saved projects expect.
+    # An explicit snapshot makes a selected construction revision reproducible.
+    construction_profile: dict[str, Any] | None = None
 
     @property
     def footprint_width(self) -> int:
@@ -128,6 +131,9 @@ class Cabinet:
         return self.width if self.orientation_degrees in (90, 270) else self.depth
 
     def validate(self) -> None:
+        if self.construction_profile is not None:
+            from .construction import ConstructionProfile
+            ConstructionProfile.from_dict(self.construction_profile).validate_for(self)
         if self.orientation_degrees not in (0, 90, 180, 270):
             raise ValueError("Cabinet orientation must be 0, 90, 180 or 270 degrees.")
         if not 300 <= self.width <= 3000:
@@ -178,6 +184,15 @@ class PlacedProduct:
     commercial_treatment: str | None = None
     manufacturing_treatment: str | None = None
     appearance: str = "Catalogue"
+    orientation_degrees: int = 0
+
+    @property
+    def footprint_width(self) -> int:
+        return self.depth if self.orientation_degrees in (90, 270) else self.width
+
+    @property
+    def footprint_depth(self) -> int:
+        return self.width if self.orientation_degrees in (90, 270) else self.depth
 
     def __post_init__(self) -> None:
         visual_only = get_product(self.type_id).library == PROPS
@@ -204,9 +219,11 @@ class PlacedProduct:
             raise ValueError("Unsupported product appearance.")
         if not self.item_id.strip() or self.width <= 0 or self.depth <= 0 or self.height <= 0:
             raise ValueError("Placed product requires an ID and positive dimensions.")
+        if self.orientation_degrees not in (0, 90, 180, 270):
+            raise ValueError("Product rotation must be 0, 90, 180 or 270 degrees.")
         if (self.position_x < 0 or self.position_y < 0 or self.elevation_z < 0
-                or self.position_x + self.width > room.width
-                or self.position_y + self.depth > room.depth
+                or self.position_x + self.footprint_width > room.width
+                or self.position_y + self.footprint_depth > room.depth
                 or self.elevation_z + self.height > room.height):
             raise ValueError(f"{self.item_id} is outside the room boundaries.")
 

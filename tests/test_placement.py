@@ -92,6 +92,8 @@ def test_mouse_driven_drag_updates_model_and_undo_redo():
     window.snap_action.setChecked(False)
     window.show()
     application.processEvents()
+    window.plan_toggle_button.click()  # Expanded plan is the precision editing workspace.
+    application.processEvents()
     view = window.plan_view
     item = view._cabinet_items["C1"]
     start = view.mapFromScene(item.sceneBoundingRect().center())
@@ -140,13 +142,17 @@ def test_mouse_catalogue_placement_preview_commit_and_escape():
         round(view._ox + (200 + 300) * view._scale),
         round(view._oy + (1800 + 300) * view._scale),
     )
-    QTest.mouseClick(view.viewport(), Qt.MouseButton.LeftButton, pos=view.mapFromScene(center_scene))
+    click_position = view.mapFromScene(center_scene)
+    clicked_model = view._model_point(click_position)
+    QTest.mouseClick(view.viewport(), Qt.MouseButton.LeftButton, pos=click_position)
     application.processEvents()
     assert len(window.project.cabinets) == 2
     placed = window.project.selected_cabinet
     assert placed.cabinet_type_id == "base_3_drawer"
-    assert abs(placed.position_x - 200) <= 10
-    assert abs(placed.position_y - 1800) <= 10
+    # The click is quantized twice: scene to viewport, then viewport to model.
+    # Assert the stored millimetres correspond to the actual clicked pixel.
+    assert placed.position_x == round(clicked_model.x() - 300)
+    assert placed.position_y == round(clicked_model.y() - 300)
 
     window.begin_catalogue_placement()
     QTest.keyClick(view, Qt.Key.Key_Escape)

@@ -32,8 +32,9 @@ def _placed(type_id: str, item_id: str, x: int, y: int) -> PlacedProduct:
 def test_one_visible_library_browser_filters_all_four_groups():
     app = QApplication.instance() or QApplication([])
     window = MainWindow()
-    assert not window.explorer_tabs.isTabVisible(1)
+    assert window.explorer_tabs.tabText(1) == "Libraries"
     assert window.explorer_tabs.isTabVisible(2)
+    assert not window.explorer_tabs.isTabVisible(3)
     window.explorer_tabs.setCurrentWidget(window.library_page)
     window.library_combo.setCurrentText(FURNITURE)
     window.library_family_combo.setCurrentText("Wardrobe")
@@ -109,10 +110,12 @@ def test_invalid_mouse_placement_shows_preview_and_preserves_project():
     window = MainWindow(start_empty=False)
     window.show()
     app.processEvents()
+    window.plan_toggle_button.click()
+    app.processEvents()
     window.plan_view.begin_product_placement("oven_freestanding")
     view = window.plan_view
     collision = view.mapFromScene(view._ox + 1700 * view._scale,
-                                  view._oy + 2900 * view._scale)
+                                  view._oy + 2800 * view._scale)
     QTest.mouseMove(view.viewport(), collision)
     assert not view._preview_valid
     assert "C1" in view._product_preview_error

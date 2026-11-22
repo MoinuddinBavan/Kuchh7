@@ -1,0 +1,90 @@
+{
+  "reference_status": "synthetic",
+  "source_document": "Stage 7 independent arithmetic fixture; not client-approved construction",
+  "construction_assumptions": [
+    "Two full-height side panels; top and bottom fit between 18 mm sides.",
+    "6 mm back fits within top/bottom; shelf length equals clear width and depth is cabinet depth minus 20 mm.",
+    "Door and drawer reveals are 2 mm; two example concealed hinges per door.",
+    "Example drawer box offsets and runners follow the existing demonstration rule only."
+  ],
+  "cabinets": {
+    "C1": {
+      "type_id": "base_2_door", "size": [800, 720, 600], "material": "Cashmere",
+      "components": [
+        ["Left side panel", 720, 600, 18, "Cashmere", 1],
+        ["Right side panel", 720, 600, 18, "Cashmere", 1],
+        ["Top panel", 764, 600, 18, "Cashmere", 1],
+        ["Bottom panel", 764, 600, 18, "Cashmere", 1],
+        ["Back panel", 684, 764, 6, "Cashmere", 1],
+        ["Shelf", 764, 580, 18, "Cashmere", 1],
+        ["Door", 716, 397, 18, "Cashmere", 2],
+        ["Concealed hinge", 0, 0, 0, "Hardware", 4]
+      ]
+    },
+    "C2": {
+      "type_id": "base_3_drawer", "size": [600, 720, 600], "material": "Warm White",
+      "components": [
+        ["Left side panel", 720, 600, 18, "Warm White", 1],
+        ["Right side panel", 720, 600, 18, "Warm White", 1],
+        ["Top panel", 564, 600, 18, "Warm White", 1],
+        ["Bottom panel", 564, 600, 18, "Warm White", 1],
+        ["Back panel", 684, 564, 6, "Warm White", 1],
+        ["Drawer front", "712/3", 596, 18, "Warm White", 3],
+        ["Drawer box side", 530, "547/3", 12, "Drawer board", 6],
+        ["Drawer box front/back", 538, "547/3", 12, "Drawer board", 6],
+        ["Drawer bottom", 538, 530, 6, "Drawer board", 3],
+        ["Drawer runner pair", 0, 0, 0, "Hardware", 3]
+      ]
+    },
+    "C3": {
+      "type_id": "sink_base", "size": [800, 720, 600], "material": "Cashmere",
+      "components": [
+        ["Left side panel", 720, 600, 18, "Cashmere", 1],
+        ["Right side panel", 720, 600, 18, "Cashmere", 1],
+        ["Top panel", 764, 600, 18, "Cashmere", 1],
+        ["Bottom panel", 764, 600, 18, "Cashmere", 1],
+        ["Back panel", 684, 764, 6, "Cashmere", 1],
+        ["Door", 716, 397, 18, "Cashmere", 2],
+        ["Concealed hinge", 0, 0, 0, "Hardware", 4],
+        ["Sink rail", 764, 100, 18, "Cashmere", 2]
+      ]
+    },
+    "C4": {
+      "type_id": "wall_2_door", "size": [800, 720, 350], "material": "Warm White",
+      "components": [
+        ["Left side panel", 720, 350, 18, "Warm White", 1],
+        ["Right side panel", 720, 350, 18, "Warm White", 1],
+        ["Top panel", 764, 350, 18, "Warm White", 1],
+        ["Bottom panel", 764, 350, 18, "Warm White", 1],
+        ["Back panel", 684, 764, 6, "Warm White", 1],
+        ["Shelf", 764, 330, 18, "Warm White", 1],
+        ["Door", 716, 397, 18, "Warm White", 2],
+        ["Concealed hinge", 0, 0, 0, "Hardware", 4]
+      ]
+    },
+    "C5": {
+      "type_id": "wall_open_shelf", "size": [600, 720, 350], "material": "Walnut",
+      "components": [
+        ["Left side panel", 720, 350, 18, "Walnut", 1],
+        ["Right side panel", 720, 350, 18, "Walnut", 1],
+        ["Top panel", 564, 350, 18, "Walnut", 1],
+        ["Bottom panel", 564, 350, 18, "Walnut", 1],
+        ["Back panel", 684, 564, 6, "Walnut", 1],
+        ["Shelf", 564, 330, 18, "Walnut", 2]
+      ]
+    },
+    "C6": {
+      "type_id": "tall_pantry", "size": [600, 2100, 600], "material": "Walnut",
+      "components": [
+        ["Left side panel", 2100, 600, 18, "Walnut", 1],
+        ["Right side panel", 2100, 600, 18, "Walnut", 1],
+        ["Top panel", 564, 600, 18, "Walnut", 1],
+        ["Bottom panel", 564, 600, 18, "Walnut", 1],
+        ["Back panel", 2064, 564, 6, "Walnut", 1],
+        ["Shelf", 564, 580, 18, "Walnut", 4],
+        ["Door", 2096, 297, 18, "Walnut", 2],
+        ["Concealed hinge", 0, 0, 0, "Hardware", 4]
+      ]
+    }
+  }
+}

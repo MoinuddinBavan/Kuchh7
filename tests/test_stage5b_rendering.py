@@ -136,6 +136,8 @@ def test_render_workspace_unavailable_without_provider_and_rotated_3d_actor(monk
     monkeypatch.delenv("KUCHE7_RENDER_PROVIDER", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
     application = QApplication.instance() or QApplication([])
     window = MainWindow()
     proposal = build_proposal(window.project,
@@ -153,7 +155,7 @@ def test_render_workspace_unavailable_without_provider_and_rotated_3d_actor(monk
     front_y1 = front_y0 + rotated.width * window.plan_view._scale
     assert any(
         isinstance(item, QGraphicsLineItem)
-        and item.pen().color() == QColor("#0B5559")
+        and item.pen().color() == QColor("#50675E")
         and item.line().x1() == pytest.approx(front_x)
         and item.line().x2() == pytest.approx(front_x)
         and sorted((item.line().y1(), item.line().y2())) == pytest.approx([front_y0, front_y1])

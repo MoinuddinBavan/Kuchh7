@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QPainter, QPen, QPixmap, QPolygonF
+from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPen, QPixmap, QPolygonF
 
 from ..catalogue import CatalogueItem
 from ..product_libraries import ProductDefinition
@@ -22,6 +24,54 @@ def product_thumbnail(item: ProductDefinition) -> QPixmap:
     pixmap.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    if item.shape in {
+        "potted_green_plant", "floor_plant", "flower_vase", "decorative_vase",
+        "fruit_bowl", "utensil_holder", "decorative_tray", "small_sculpture",
+    }:
+        painter.setPen(QPen(QColor("#58646A"), 1.2))
+        if item.shape in ("potted_green_plant", "floor_plant"):
+            painter.setBrush(QColor("#B9AEA0"))
+            painter.drawRoundedRect(QRectF(26, 36, 24, 18), 4, 4)
+            painter.setBrush(QColor("#4E7855"))
+            for px, py, rx, ry in ((15, 18, 17, 11), (28, 10, 19, 14),
+                                   (44, 18, 17, 11), (25, 25, 25, 13)):
+                painter.drawEllipse(QRectF(px, py, rx, ry))
+        elif item.shape in ("flower_vase", "decorative_vase"):
+            painter.setBrush(QColor(item.colour))
+            painter.drawEllipse(QRectF(27, 27, 22, 27))
+            painter.drawRect(QRectF(34, 20, 8, 12))
+            for px, py in ((24, 11), (37, 6), (50, 12)):
+                painter.setPen(QPen(QColor("#69816A" if item.shape == "flower_vase" else "#8F7862"), 1.6))
+                painter.drawLine(QPointF(38, 24), QPointF(px + 3, py + 3))
+                painter.setBrush(QColor("#D9A7A1" if item.shape == "flower_vase" else "#BAA184"))
+                painter.drawEllipse(QRectF(px, py, 7, 7))
+        elif item.shape == "fruit_bowl":
+            painter.setBrush(QColor("#D2C3A8"))
+            painter.drawEllipse(QRectF(15, 27, 47, 24))
+            for px, colour in ((25, "#B98550"), (36, "#A5B16C"), (47, "#A65E4C")):
+                painter.setBrush(QColor(colour))
+                painter.drawEllipse(QRectF(px, 22, 13, 13))
+        elif item.shape == "utensil_holder":
+            painter.setPen(QPen(QColor("#9A7453"), 3))
+            for px, top in ((28, 8), (37, 5), (47, 11)):
+                painter.drawLine(QPointF(38, 43), QPointF(px, top))
+            painter.setPen(QPen(QColor("#58646A"), 1.2))
+            painter.setBrush(QColor("#D2C6B5"))
+            painter.drawRoundedRect(QRectF(27, 27, 24, 26), 4, 4)
+        elif item.shape == "decorative_tray":
+            painter.setBrush(QColor("#A89B8B"))
+            painter.drawRoundedRect(QRectF(10, 37, 56, 12), 4, 4)
+            painter.setBrush(QColor("#E5DFD3"))
+            for px in (25, 44):
+                painter.drawRoundedRect(QRectF(px, 25, 12, 16), 3, 3)
+        else:
+            painter.setBrush(QColor("#D6CEC2"))
+            painter.drawEllipse(QRectF(23, 44, 30, 9))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(QColor("#C3B8A9"), 7))
+            painter.drawEllipse(QRectF(28, 14, 22, 33))
+        painter.end()
+        return pixmap
     width = min(49.0, max(23.0, 42.0 * item.width / max(item.width, item.height)))
     height = min(42.0, max(21.0, 42.0 * item.height / max(item.width, item.height)))
     if item.shape in ("hob", "sink", "board"):
@@ -44,11 +94,23 @@ def product_thumbnail(item: ProductDefinition) -> QPixmap:
 
 
 def catalogue_thumbnail(item: CatalogueItem, finish: str = "Cashmere") -> QPixmap:
-    """Draw a compact preview directly from the catalogue geometry definition."""
+    """Draw a room-lit furniture preview from the catalogue definition."""
+    preview_name = f"{item.type_id}--{finish.lower().replace(' ', '_').replace('/', '_')}.png"
+    rendered = Path(__file__).resolve().parent / "cabinet_previews" / preview_name
+    if rendered.is_file():
+        return QPixmap(str(rendered))
     pixmap = QPixmap(92, 72)
     pixmap.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+    wall = QLinearGradient(0, 0, 0, 57)
+    wall.setColorAt(0, QColor("#F8F1E8"))
+    wall.setColorAt(1, QColor("#E8DCCD"))
+    painter.fillRect(QRectF(0, 0, 92, 57), wall)
+    painter.fillRect(QRectF(0, 57, 92, 15), QColor("#D2BEA5"))
+    painter.setPen(QPen(QColor("#BEAA91"), 0.7))
+    painter.drawLine(QPointF(0, 57), QPointF(92, 57))
 
     body = QColor(PREVIEW_COLOURS.get(finish, PREVIEW_COLOURS["Cashmere"]))
     edge = QColor("#46545D")
@@ -65,6 +127,10 @@ def catalogue_thumbnail(item: CatalogueItem, finish: str = "Cashmere") -> QPixma
     x = 45 - front_width / 2
     y = 64 - front_height
     depth_offset = min(11.0, max(6.0, item.depth / max(item.width, 1) * 12))
+
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor(61, 48, 35, 42))
+    painter.drawEllipse(QRectF(x - 7, 61, front_width + depth_offset + 15, 6))
 
     if item.front_style == "corner":
         front = QPolygonF([

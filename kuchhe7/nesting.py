@@ -35,6 +35,9 @@ class PanelInstance:
     material: str
     instance_number: int
     cabinet_type: str = ""
+    grain_direction: str = "undefined"
+    profile_id: str = ""
+    profile_revision: str = ""
 
     @property
     def instance_id(self) -> str:
@@ -157,12 +160,15 @@ def expand_panel_instances(components: list[Component]) -> list[PanelInstance]:
                 PanelInstance(
                     cabinet_id=component.cabinet_id,
                     component_name=component.name,
-                    length_mm=component.length_mm,
-                    width_mm=component.width_mm,
+                    length_mm=component.cut_length_mm if component.cut_length_mm is not None else component.length_mm,
+                    width_mm=component.cut_width_mm if component.cut_width_mm is not None else component.width_mm,
                     thickness_mm=component.thickness_mm,
                     material=component.material,
                     instance_number=instance_number,
                     cabinet_type=component.cabinet_type,
+                    grain_direction=component.grain_direction,
+                    profile_id=component.profile_id,
+                    profile_revision=component.profile_revision,
                 )
             )
     return panels
@@ -192,6 +198,7 @@ def _orientations(panel: PanelInstance, settings: SheetSettings) -> list[tuple[f
     if (
         settings.allow_rotation
         and not settings.grain_rotation_restricted
+        and panel.grain_direction in ("none", "undefined")
         and panel.length_mm != panel.width_mm
     ):
         orientations.append((panel.width_mm, panel.length_mm, True))

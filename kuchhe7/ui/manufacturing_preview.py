@@ -62,7 +62,7 @@ class ComponentDrawingView(QGraphicsView):
 
     @staticmethod
     def _dimension_line(scene: QGraphicsScene, x1: float, y1: float, x2: float, y2: float, text: str) -> None:
-        pen = QPen(QColor("#147D83"), 1.4)
+        pen = QPen(QColor("#60766F"), 1.4)
         scene.addLine(x1, y1, x2, y2, pen)
         if abs(x2 - x1) >= abs(y2 - y1):
             scene.addLine(x1, y1 - 7, x1, y1 + 7, pen)
@@ -75,7 +75,7 @@ class ComponentDrawingView(QGraphicsView):
             label = scene.addText(text, QFont("Segoe UI", 9, QFont.Weight.DemiBold))
             label.setRotation(-90)
             label.setPos(x1 - 34, (y1 + y2 + label.boundingRect().width()) / 2)
-        label.setDefaultTextColor(QColor("#0E6267"))
+        label.setDefaultTextColor(QColor("#50675E"))
 
     def _redraw(self) -> None:
         scene = self._scene
@@ -160,7 +160,7 @@ class DrillingPreviewView(QGraphicsView):
         panel = scene.addRect(panel_x, panel_y, panel_w, panel_h, QPen(QColor("#172A3C"), 2.4))
         panel.setBrush(QColor("#F2EFE9"))
         scene.addText("REFERENCE EDGE", QFont("Segoe UI", 11, QFont.Weight.Bold)).setPos(panel_x - 130, panel_y + 120)
-        reference = scene.addLine(panel_x, panel_y, panel_x, panel_y + panel_h, QPen(QColor("#147D83"), 5))
+        reference = scene.addLine(panel_x, panel_y, panel_x, panel_y + panel_h, QPen(QColor("#60766F"), 5))
         reference.setZValue(2)
 
         params = self._parameters
@@ -181,13 +181,13 @@ class DrillingPreviewView(QGraphicsView):
             hole_label.setDefaultTextColor(QColor("#8A281F"))
             hole_label.setPos(panel_x + offset_x + 13, cy - 10)
 
-        dimension_pen = QPen(QColor("#147D83"), 1.4)
+        dimension_pen = QPen(QColor("#60766F"), 1.4)
         dimension_y = panel_y + panel_h + 25
         scene.addLine(panel_x, dimension_y, panel_x + offset_x, dimension_y, dimension_pen)
         scene.addLine(panel_x, dimension_y - 7, panel_x, dimension_y + 7, dimension_pen)
         scene.addLine(panel_x + offset_x, dimension_y - 7, panel_x + offset_x, dimension_y + 7, dimension_pen)
         offset_label = scene.addText(f"Edge offset {params.edge_offset_mm} mm", QFont("Segoe UI", 11, QFont.Weight.DemiBold))
-        offset_label.setDefaultTextColor(QColor("#0E6267"))
+        offset_label.setDefaultTextColor(QColor("#50675E"))
         offset_label.setPos(panel_x + 8, dimension_y + 4)
         panel_label = scene.addText(
             f"Example on {component.name}  •  {component.length_mm:g} × {component.width_mm:g} × {component.thickness_mm:g} mm",
@@ -208,7 +208,7 @@ class ExplodedCabinetView(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         self.plotter = QtInteractor(self)
         self._plotter_closed = False
-        self.plotter.set_background("#F5F7F8", top="#DCE5EA")
+        self.plotter.set_background("#F5F2EC", top="#E8E5DF")
         self.plotter.enable_anti_aliasing("ssaa")
         layout.addWidget(self.plotter.interactor)
         self._component_actors: dict[str, list[object]] = {}
@@ -223,7 +223,7 @@ class ExplodedCabinetView(QWidget):
             mesh,
             name=actor_name,
             color=colour,
-            edge_color="#334653",
+            edge_color="#4B5350",
             show_edges=True,
             line_width=1.0,
             ambient=0.34,
@@ -311,31 +311,37 @@ class ExplodedCabinetView(QWidget):
             labels.append(f"{component.name} ×{component.quantity}")
             points.append((w / 2 + spread * 0.35 + component_index * 45, -d / 2 - spread * 0.35, h * 0.42))
 
-        if points:
-            self.plotter.add_point_labels(
-                points, labels, name="engineering-labels", point_size=0,
-                font_size=13, text_color="#FFFFFF", shape_color="#172A3C",
-                shape_opacity=0.86, margin=4, always_visible=True,
-            )
-        self.plotter.add_axes(line_width=1, color="#526571")
+        self.plotter.add_axes(line_width=1, color="#60766F")
         self.plotter.camera_position = [
             (w * 1.75, -d * 2.65, h * 1.45),
             (0, 0, 0),
             (0, 0, 1),
         ]
         self.plotter.reset_camera()
+        # Keep the exploded assembly legible in the wide demonstration viewport.
+        # This changes only the preview camera, never panel geometry or BOM data.
+        self.plotter.camera.zoom(1.8)
+        if points:
+            # Add annotations after framing the real meshes; annotation bounds
+            # must not make the cabinet appear smaller on screen.
+            annotation_points = [(x * 1.25, y * 1.25, z * 1.25) for x, y, z in points]
+            self.plotter.add_point_labels(
+                annotation_points, labels, name="engineering-labels", point_size=0,
+                font_size=11, text_color="#FFFFFF", shape_color="#293136",
+                shape_opacity=0.86, margin=4, always_visible=True,
+            )
         self.plotter.render()
 
     def clear_cabinet(self) -> None:
         self.plotter.clear()
         self._component_actors.clear()
         self._actor_colours.clear()
-        self.plotter.set_background("#F5F7F8", top="#DCE5EA")
+        self.plotter.set_background("#F5F2EC", top="#E8E5DF")
         self.plotter.add_text(
             "No cabinet selected\nAdd furniture in Design Studio to begin.",
             position="upper_left",
             font_size=12,
-            color="#61727D",
+            color="#59645E",
             name="engineering-empty-state",
         )
         self.plotter.render()
@@ -345,7 +351,7 @@ class ExplodedCabinetView(QWidget):
             actor.GetProperty().SetColor(*pv.Color(colour).float_rgb)
             actor.GetProperty().SetLineWidth(1.0)
         for actor in self._component_actors.get(component_name, []):
-            actor.GetProperty().SetColor(*pv.Color("#147D83").float_rgb)
+            actor.GetProperty().SetColor(*pv.Color("#8F7656").float_rgb)
             actor.GetProperty().SetLineWidth(2.6)
         self.plotter.render()
 
@@ -547,7 +553,15 @@ class ManufacturingPreviewWidget(QWidget):
             item = QListWidgetItem(f"{component.name}\n{dimensions}  •  Qty {component.quantity}")
             item.setSizeHint(QSize(0, 46))
             item.setData(Qt.ItemDataRole.UserRole, row)
-            item.setToolTip(f"{component.cabinet_id} — {component.material}")
+            edges = "; ".join(f"{rule.edge}: {rule.material} {rule.thickness_mm:g} mm"
+                              for rule in component.edge_banding) or "unspecified"
+            item.setToolTip(
+                f"{component.cabinet_id} — {component.material}\n"
+                f"Profile: {component.profile_id or 'LEGACY-DEMO'} / {component.profile_revision or 'legacy'}\n"
+                f"Cut: {component.cut_length_mm if component.cut_length_mm is not None else component.length_mm:g} × "
+                f"{component.cut_width_mm if component.cut_width_mm is not None else component.width_mm:g} mm\n"
+                f"Grain: {component.grain_direction}; edges: {edges}"
+            )
             self.component_list.addItem(item)
             if component.name == previous_name:
                 selected_row = row

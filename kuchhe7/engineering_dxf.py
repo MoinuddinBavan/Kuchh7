@@ -165,21 +165,22 @@ def _room_geometry(msp, project: Project) -> None:
 def _cabinet_footprints(msp, project: Project) -> None:
     for index, cabinet in enumerate(project.cabinets):
         x = cabinet.position_x
-        y = project.room.depth - cabinet.position_y - cabinet.depth
-        _closed_rectangle(msp, x, y, cabinet.width, cabinet.depth, "CABINET_FOOTPRINTS")
+        footprint_width, footprint_depth = cabinet.footprint_width, cabinet.footprint_depth
+        y = project.room.depth - cabinet.position_y - footprint_depth
+        _closed_rectangle(msp, x, y, footprint_width, footprint_depth, "CABINET_FOOTPRINTS")
         # Compact footprint ID plus a schedule below the plan keeps vertically
         # stacked base/wall units individually identifiable at full-room zoom.
         _text(msp, cabinet.cabinet_id, x + 20,
-              y + (cabinet.depth - 75 if cabinet.elevation_z else 65),
+              y + (footprint_depth - 75 if cabinet.elevation_z else 65),
               "CABINET_LABELS", 52)
-        _horizontal_dimension(msp, x, x + cabinet.width, y - 65, cabinet.width, "DIMENSIONS")
+        _horizontal_dimension(msp, x, x + footprint_width, y - 65, footprint_width, "DIMENSIONS")
         schedule_x = (index % 2) * 1850
         schedule_y = -420 - (index // 2) * 160
         item_name = get_catalogue_item(cabinet.cabinet_type_id).name
         _text(msp, f"{cabinet.cabinet_id} {item_name}", schedule_x, schedule_y, "CABINET_LABELS", 43)
         _text(msp, f"X {cabinet.position_x} Y {cabinet.position_y} Z {cabinet.elevation_z}",
               schedule_x, schedule_y - 50, "CABINET_LABELS", 35)
-        _text(msp, f"{cabinet.width} x {cabinet.depth} x {cabinet.height} mm",
+        _text(msp, f"{cabinet.width} x {cabinet.depth} x {cabinet.height} mm / ROT {cabinet.orientation_degrees} deg",
               schedule_x, schedule_y - 100, "CABINET_LABELS", 35)
 
 
@@ -225,7 +226,8 @@ def _panel_outlines(doc, msp, project: Project, profile: CncDxfProfile | None) -
     max_row_width = 6000.0
     gap = 150.0 if not cnc or profile.include_labels else 100.0
     for component, instance in eligible_panel_instances(project):
-        length, width = component.length_mm, component.width_mm
+        length = component.cut_length_mm if component.cut_length_mm is not None else component.length_mm
+        width = component.cut_width_mm if component.cut_width_mm is not None else component.width_mm
         title = f"{component.cabinet_id} {component.name} #{instance}"
         detail = f"{length:g} x {width:g} x {component.thickness_mm:g} mm / {component.material}"
         allocation_width = max(length, len(title) * 16, len(detail) * 12) if (not cnc or profile.include_labels) else length
@@ -237,6 +239,11 @@ def _panel_outlines(doc, msp, project: Project, profile: CncDxfProfile | None) -
             entity.set_xdata("KUCHE7_DEMO", [(1000, component.cabinet_id),
                                              (1000, component.name),
                                              (1000, component.material),
+                                             (1000, component.profile_id or "LEGACY-DEMO"),
+                                             (1000, component.profile_revision or "legacy"),
+                                             (1000, component.grain_direction),
+                                             (1000, ";".join(rule.edge + ":" + rule.material
+                                                             for rule in component.edge_banding)),
                                              (1040, float(component.thickness_mm)),
                                              (1070, instance)])
         if not cnc or profile.include_labels:

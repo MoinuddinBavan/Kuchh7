@@ -48,6 +48,14 @@ PRODUCTS = (
     ProductDefinition("utensil_jar", PROPS, "Countertop", "Utensil Jar", 160, 160, 260, 740, "#B69A79", "jar", "visual_only"),
     ProductDefinition("pendant_light", PROPS, "Lighting", "Pendant Light", 300, 300, 400, 2150, "#C1B29A", "light", "visual_only"),
     ProductDefinition("cutting_board", PROPS, "Countertop", "Decorative Cutting Board", 320, 200, 25, 740, "#C3A47E", "board", "visual_only"),
+    ProductDefinition("potted_green_plant", PROPS, "Greenery", "Potted Green Plant", 240, 240, 380, 740, "#55765A", "potted_green_plant", "visual_only"),
+    ProductDefinition("flower_vase", PROPS, "Decor", "Flower Vase", 220, 220, 420, 740, "#C9D0C7", "flower_vase", "visual_only"),
+    ProductDefinition("floor_plant", PROPS, "Greenery", "Floor Plant", 420, 420, 1250, 0, "#47694D", "floor_plant", "visual_only"),
+    ProductDefinition("decorative_vase", PROPS, "Decor", "Decorative Vase", 190, 190, 450, 740, "#B9AA98", "decorative_vase", "visual_only"),
+    ProductDefinition("fruit_bowl", PROPS, "Countertop", "Fruit Bowl", 300, 250, 160, 740, "#D2C3A8", "fruit_bowl", "visual_only"),
+    ProductDefinition("utensil_holder", PROPS, "Countertop", "Utensil Holder", 180, 180, 350, 740, "#D2C6B5", "utensil_holder", "visual_only"),
+    ProductDefinition("decorative_tray", PROPS, "Countertop", "Decorative Tray", 340, 230, 150, 740, "#A89B8B", "decorative_tray", "visual_only"),
+    ProductDefinition("small_sculpture", PROPS, "Shelf Decor", "Small Sculpture", 150, 140, 145, 1655, "#D6CEC2", "small_sculpture", "visual_only"),
     ProductDefinition("hinge_soft_close", HARDWARE, "Hinges", "Concealed Hinge · Sample", 35, 50, 15),
     ProductDefinition("handle_bar", HARDWARE, "Handles", "Bar Handle · Sample", 160, 25, 30),
     ProductDefinition("runner_pair", HARDWARE, "Runners", "Drawer Runner Pair · Sample", 450, 45, 20),
@@ -55,6 +63,10 @@ PRODUCTS = (
 )
 
 PRODUCTS_BY_ID = {item.type_id: item for item in PRODUCTS}
+CURATED_PROP_IDS = frozenset({
+    "potted_green_plant", "flower_vase", "floor_plant", "decorative_vase",
+    "fruit_bowl", "utensil_holder", "decorative_tray", "small_sculpture",
+})
 
 
 def products_for(library: str) -> tuple[ProductDefinition, ...]:

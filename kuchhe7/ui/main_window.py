@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
 from itertools import chain
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QSize, Qt
-from PySide6.QtGui import QAction, QFont, QIcon, QKeySequence, QUndoStack
+from PySide6.QtGui import QAction, QColor, QFont, QIcon, QKeySequence, QPainter, QPen, QUndoStack
 from PySide6.QtWidgets import (
+    QAbstractSpinBox,
     QAbstractItemView,
     QApplication,
     QComboBox,
@@ -16,6 +18,8 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
     QFormLayout,
+    QGraphicsDropShadowEffect,
+    QGridLayout,
     QGroupBox,
     QHeaderView,
     QHBoxLayout,
@@ -24,10 +28,13 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QScrollArea,
+    QSizePolicy,
     QPushButton,
     QSpinBox,
+    QStyleOptionSpinBox,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -48,6 +55,9 @@ from ..catalogue import CATEGORIES, FURNITURE_FAMILIES, catalogue_items, create_
 from ..custom_catalogue import load_custom_catalogue, save_custom_catalogue
 from ..exports import export_bom_xlsx, export_front_elevation_dxf
 from ..engineering_dxf import CNC_PROTOTYPE, DRAWING_LABELS, export_engineering_dxf
+from ..complete_kitchen_dxf import export_complete_kitchen_dxf
+from ..cut_list import export_cut_list_xlsx
+from ..construction import ConstructionProfile, DEMO_STATUS, synthetic_profile_for
 from ..models import MATERIALS, MAX_CABINETS, PROJECT_TYPES, HardwareAssignment, Opening, PlacedProduct, Project
 from ..product_libraries import APPEARANCE_COLOURS, APPLIANCES, FURNITURE, HARDWARE, LIBRARIES, PROPS, get_product, products_for
 from ..openings import DOOR_SWINGS, WALL_IDS, WALL_LABELS, wall_length
@@ -56,20 +66,49 @@ from ..pricing_setup import (apply_company_setup_to_new_project,
                              load_company_price_setup, save_company_price_setup)
 from ..pricing_refresh import apply_company_price_refresh, preview_company_price_refresh
 from ..price_master import validate_company_price_setup
-from ..rendering import capture_view_png
+from ..rendering import capture_view_png, project_render_context
 from ..platform_support import is_macos, platform_shortcut
-from .cad_views import Cabinet3DView, RoomPlanView
+from .cad_views import Cabinet3DView, FINISH_COLOURS, RoomPlanView
+from .design_stage import DesignStage
 from .ai_design_workspace import AIDesignWorkspace
 from .catalogue_preview import catalogue_thumbnail, product_thumbnail
 from .cabinet_library_dialog import CabinetLibraryDialog
 from .documents_workspace import DocumentsWorkspace
 from .pricing_workspace import PricingWorkspace
 from .pricing_refresh_dialog import PricingRefreshDialog
+from .premium_icons import brand_mark, outline_icon
+from .top_svg_icons import AnchoredExportMenu, PremiumExportButton, top_icon, top_label_pixmap
 from .engineering_export_dialog import EngineeringExportDialog
 from .history import AddCabinetCommand, ApplyDesignProposalCommand, HardwareAssignmentCommand, MoveCabinetCommand, OpeningChangeCommand, ProductChangeCommand, RemoveCabinetCommand
 from .manufacturing_preview import ManufacturingPreviewWidget
 from .realistic_render_workspace import RealisticRenderWorkspace
 from .sheet_nesting import SheetNestingWidget
+from .sidebar_cards import (DETAIL_ROLE, EXPANDED_ROLE, KIND_ROLE, NAME_ROLE,
+                            PREVIEW_ROLE, TALL_ROLE, SidebarCardDelegate,
+                            appliance_card_preview, cached_cabinet_preview)
+
+
+class InspectorSpinBox(QSpinBox):
+    """Keep native spin interaction while drawing legible step symbols."""
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        option = QStyleOptionSpinBox()
+        self.initStyleOption(option)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor("#806A58" if self.isEnabled() else "#B9B3AB"), 1.4))
+        for sub_control, plus in ((QStyle.SubControl.SC_SpinBoxUp, True),
+                                  (QStyle.SubControl.SC_SpinBoxDown, False)):
+            bounds = self.style().subControlRect(QStyle.ComplexControl.CC_SpinBox,
+                                                 option, sub_control, self)
+            center = bounds.center()
+            if bounds.width() < 6 or bounds.height() < 6:
+                continue
+            painter.drawLine(center.x() - 3, center.y(), center.x() + 3, center.y())
+            if plus:
+                painter.drawLine(center.x(), center.y() - 3, center.x(), center.y() + 3)
+        painter.end()
 
 
 class NewProjectDialog(QDialog):
@@ -151,10 +190,12 @@ class MainWindow(QMainWindow):
         self._updating_controls = False
         self._updating_opening_controls = False
         self._workspace_3d_maximized = False
+        self._rail_material_active = False
         self._workspace_restore_sizes = [620, 720]
         self._workspace_restore_docks: dict[QDockWidget, bool] = {}
         self._engineering_restore_docks: dict[QDockWidget, bool] = {}
         self.selected_wall_id = "WEST"
+        self._inspector_context = "cabinet"
         self.undo_stack = QUndoStack(self)
         self.setWindowTitle("kuchhe7 — Kitchen Design & Manufacturing Platform | AIZ INFOTECHS")
         self.resize(1540, 920)
@@ -168,15 +209,21 @@ class MainWindow(QMainWindow):
         self._build_explorer()
         self._build_properties()
         self._build_bom()
+        self.bom_preview_action = self.bom_dock.toggleViewAction()
+        self.bom_preview_action.setText("BOM Preview")
+        self.bom_preview_action.setShortcut("Ctrl+Shift+B")
+        self.view_menu.addSeparator()
+        self.view_menu.addAction(self.bom_preview_action)
         self._build_status_bar()
-        self.resizeDocks([self.explorer_dock, self.properties_dock], [330, 365], Qt.Orientation.Horizontal)
-        self.resizeDocks([self.bom_dock], [245], Qt.Orientation.Vertical)
+        self.resizeDocks([self.explorer_dock, self.properties_dock], [378, 318], Qt.Orientation.Horizontal)
+        self.resizeDocks([self.bom_dock], [140], Qt.Orientation.Vertical)
         self.statusBar().showMessage("Ready — demonstration construction rules are not factory approved")
         if self.custom_library_error:
             self.statusBar().showMessage(f"Custom cabinet library could not be read: {self.custom_library_error}")
             self.library_create_button.setEnabled(False)
             self.library_edit_button.setEnabled(False)
         self.refresh_all(reset_camera=True)
+        self.bom_dock.hide()
 
     def _build_actions(self) -> None:
         self.new_action = QAction("New Project", self, triggered=self.new_project)
@@ -217,6 +264,9 @@ class MainWindow(QMainWindow):
         self.exit_action = QAction("Quit" if is_macos() else "Exit", self, triggered=self.close)
         self.exit_action.setShortcuts(QKeySequence.keyBindings(QKeySequence.StandardKey.Quit))
         self.export_xlsx_action = QAction("Export BOM (XLSX)…", self, triggered=self.export_xlsx)
+        self.export_cut_list_action = QAction(
+            "Export Demonstration Cut List (XLSX)…", self, triggered=self.export_cut_list
+        )
         self.export_dxf_action = QAction("Export Elevation (DXF)…", self, triggered=self.export_dxf)
         self.export_dxf_action.setToolTip(
             "Export demonstration cabinet front elevations — not nesting or machine cutting instructions"
@@ -227,12 +277,30 @@ class MainWindow(QMainWindow):
         self.engineering_export_action.setToolTip(
             "Choose room plan, kitchen layout, elevations, panel outlines or generic CNC-targeted DXF prototype"
         )
+        self.complete_kitchen_export_action = QAction(
+            "Export Complete Kitchen (DXF)…", self, triggered=self.export_complete_kitchen_drawing
+        )
+        self.complete_kitchen_export_action.setToolTip(
+            "Export one drawing with plan, wall elevations, BOM schedules and panel contours; machine compatibility unverified"
+        )
         self.manufacturing_preview_action = QAction(
             "Manufacturing Preview", self, shortcut=platform_shortcut("Ctrl+Shift+M"),
             triggered=self.show_manufacturing_preview,
         )
         self.manufacturing_preview_action.setToolTip(
             "Open the selected-cabinet exploded assembly and component preview"
+        )
+        self.demo_construction_action = QAction(
+            "Apply Synthetic Construction Profile to Selected Cabinet…", self,
+            triggered=self.apply_synthetic_construction_profile,
+        )
+        self.import_construction_action = QAction(
+            "Import Construction Profile JSON for Selected Cabinet…", self,
+            triggered=self.import_construction_profile,
+        )
+        self.legacy_construction_action = QAction(
+            "Restore Legacy Demo Rules for Selected Cabinet…", self,
+            triggered=self.restore_legacy_construction_profile,
         )
         self.sheet_nesting_action = QAction(
             "Sheet Nesting", self, shortcut=platform_shortcut("Ctrl+Shift+N"), triggered=self.show_sheet_nesting
@@ -314,6 +382,7 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addActions([self.export_xlsx_action, self.export_dxf_action])
         file_menu.addAction(self.engineering_export_action)
+        file_menu.addAction(self.complete_kitchen_export_action)
         file_menu.addSeparator()
         file_menu.addAction(self.exit_action)
         edit_menu = self.menuBar().addMenu("&Edit")
@@ -322,6 +391,7 @@ class MainWindow(QMainWindow):
         edit_menu.addSeparator()
         edit_menu.addAction("Select Cabinet", lambda: self.width_spin.setFocus())
         view_menu = self.menuBar().addMenu("&View")
+        self.view_menu = view_menu
         view_menu.addActions([
             self.front_view_action, self.isometric_view_action, self.fit_all_action,
             self.reset_3d_action, self.maximize_3d_action,
@@ -352,51 +422,165 @@ class MainWindow(QMainWindow):
         manufacturing_menu.addAction(self.price_setup_action)
         manufacturing_menu.addAction(self.price_refresh_action)
         manufacturing_menu.addSeparator()
+        manufacturing_menu.addActions([self.demo_construction_action,
+                                       self.import_construction_action,
+                                       self.legacy_construction_action])
+        manufacturing_menu.addSeparator()
         manufacturing_menu.addActions([self.export_xlsx_action, self.export_dxf_action])
+        manufacturing_menu.addAction(self.export_cut_list_action)
         manufacturing_menu.addAction(self.engineering_export_action)
+        manufacturing_menu.addAction(self.complete_kitchen_export_action)
         help_menu = self.menuBar().addMenu("&Help")
         help_menu.addAction(self.about_action)
 
     def _build_toolbar(self) -> None:
-        toolbar = QToolBar("Main Ribbon")
+        def add_header_shadow(widget: QWidget) -> None:
+            shadow = QGraphicsDropShadowEffect(widget)
+            shadow.setBlurRadius(11)
+            shadow.setOffset(0, 2)
+            shadow.setColor(QColor(78, 56, 42, 35))
+            widget.setGraphicsEffect(shadow)
+
+        toolbar = QToolBar("Project Header")
         toolbar.setObjectName("mainRibbon")
         toolbar.setMovable(False)
-        toolbar.setIconSize(toolbar.iconSize() * 1.15)
-        toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
-        project_label = QLabel("PROJECT")
-        project_label.setObjectName("ribbonGroupLabel")
-        toolbar.addWidget(project_label)
-        toolbar.addActions([self.new_action, self.open_action, self.save_action])
-        toolbar.addSeparator()
-        design_label = QLabel("LAYOUT")
-        design_label.setObjectName("ribbonGroupLabel")
-        toolbar.addWidget(design_label)
-        toolbar.addActions([self.load_complete_action, self.add_cabinet_action, self.remove_cabinet_action])
-        toolbar.addActions([self.undo_action, self.redo_action])
-        toolbar.addSeparator()
-        placement_label = QLabel("PLACEMENT")
-        placement_label.setObjectName("ribbonGroupLabel")
-        toolbar.addWidget(placement_label)
-        toolbar.addActions([self.snap_action, self.grid_snap_action])
-        toolbar.addSeparator()
-        view_label = QLabel("CABINET VIEW")
-        view_label.setObjectName("ribbonGroupLabel")
-        toolbar.addWidget(view_label)
-        toolbar.addActions([
-            self.front_view_action,
-            self.isometric_view_action,
-            self.fit_all_action,
-            self.reset_3d_action,
-            self.presentation_view_action,
-            self.presentation_camera_action,
-            self.show_interior_action,
-        ])
-        toolbar.addSeparator()
-        export_label = QLabel("EXPORT")
-        export_label.setObjectName("ribbonGroupLabel")
-        toolbar.addWidget(export_label)
-        toolbar.addActions([self.export_xlsx_action, self.export_dxf_action])
+        toolbar.setFloatable(False)
+        toolbar.setFixedHeight(66)
+        header = QWidget()
+        header.setObjectName("premiumHeader")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(22, 7, 16, 7)
+        header_layout.setSpacing(0)
+        brand_badge = QLabel()
+        brand_badge.setObjectName("brandBadge")
+        brand_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        brand_badge.setFixedSize(46, 46)
+        brand_badge.setPixmap(brand_mark())
+        brand_layout = QVBoxLayout()
+        brand_layout.setSpacing(0)
+        brand_layout.setContentsMargins(0, 0, 0, 4)
+        brand_title = QLabel("KÜCHE7")
+        brand_title.setObjectName("brandTitle")
+        brand_title.setFixedWidth(112)
+        self.header_workspace_caption = QLabel("DESIGN STUDIO")
+        self.header_workspace_caption.setObjectName("brandCaption")
+        self.header_workspace_caption.setFixedWidth(112)
+        self.header_workspace_caption.setToolTip("DESIGN STUDIO")
+        brand_layout.addWidget(brand_title)
+        brand_layout.addWidget(self.header_workspace_caption)
+        project_layout = QVBoxLayout()
+        project_layout.setSpacing(7)
+        self.header_project_title = QLabel()
+        self.header_project_title.setObjectName("headerProjectTitle")
+        self.header_project_title.setFixedSize(330, 19)
+        self.header_project_meta = QLabel()
+        self.header_project_meta.setObjectName("headerProjectMeta")
+        self.header_project_meta.setFixedSize(330, 17)
+        project_layout.addWidget(self.header_project_title)
+        project_layout.addWidget(self.header_project_meta)
+        brand_divider = QFrame()
+        brand_divider.setObjectName("headerBrandDivider")
+        brand_divider.setFixedSize(1, 38)
+        menu = QMenu(self)
+        for action in self.menuBar().actions():
+            menu.addAction(action)
+        menu_button = QToolButton()
+        menu_button.setObjectName("headerMenu")
+        menu_button.setIcon(top_icon("menu", "#915B37"))
+        menu_button.setIconSize(QSize(20, 20))
+        menu_button.setFixedSize(36, 36)
+        menu_button.setMenu(menu)
+        menu_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu_button.setToolTip("All project, design, view and manufacturing commands")
+        header_layout.addWidget(brand_badge)
+        header_layout.addSpacing(12)
+        header_layout.addLayout(brand_layout)
+        header_layout.addSpacing(37)
+        header_layout.addWidget(brand_divider)
+        header_layout.addSpacing(35)
+        header_layout.addLayout(project_layout)
+        header_layout.addStretch(1)
+        self.header_saved_icon = QLabel()
+        self.header_saved_icon.setObjectName("headerSavedIcon")
+        self.header_saved_icon.setPixmap(top_label_pixmap("saved", "#446449"))
+        header_layout.addWidget(self.header_saved_icon)
+        self.header_dirty_label = QLabel("All changes saved")
+        self.header_dirty_label.setObjectName("headerSaved")
+        self.header_dirty_label.setFixedWidth(140)
+        header_layout.addWidget(self.header_dirty_label)
+        header_layout.addSpacing(12)
+        status_divider = QFrame()
+        status_divider.setObjectName("headerStatusDivider")
+        status_divider.setFixedSize(1, 30)
+        header_layout.addWidget(status_divider)
+        header_layout.addSpacing(12)
+        history = QFrame()
+        history.setObjectName("headerHistory")
+        history_layout = QHBoxLayout(history)
+        history_layout.setContentsMargins(3, 2, 3, 2)
+        history_layout.setSpacing(2)
+        for action, icon_name in ((self.undo_action, "undo"), (self.redo_action, "redo")):
+            button = QToolButton(history)
+            button.setDefaultAction(action)
+            button.setIcon(top_icon(icon_name, "#2A2C29"))
+            button.setIconSize(QSize(20, 20))
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+            button.setObjectName("headerUtility")
+            button.setToolTip(action.text())
+            button.setFixedSize(37, 34)
+            history_layout.addWidget(button)
+            if icon_name == "undo":
+                self.header_undo_button = button
+            else:
+                self.header_redo_button = button
+        header_layout.addWidget(history)
+        header_layout.addSpacing(12)
+        save_button = QPushButton("Save")
+        save_button.setObjectName("headerSave")
+        save_button.setFixedSize(78, 40)
+        save_button.setIcon(top_icon("save", "#252A27"))
+        save_button.setIconSize(QSize(18, 18))
+        save_button.clicked.connect(self.save_action.trigger)
+        add_header_shadow(save_button)
+        header_layout.addWidget(save_button)
+        header_layout.addSpacing(12)
+        export_button = PremiumExportButton()
+        export_button.setObjectName("headerExport")
+        export_menu = AnchoredExportMenu(export_button)
+        export_icon = top_icon("export", "#646A61")
+        for action in (self.export_xlsx_action, self.export_dxf_action,
+                       self.engineering_export_action, self.complete_kitchen_export_action):
+            action.setIcon(export_icon)
+        export_menu.addAction(self.export_xlsx_action)
+        for label, method in (
+            ("Export BOM (PDF)…", "export_bom_pdf"),
+            ("Export Quotation (XLSX)…", "export_quote_excel"),
+            ("Export Quotation (PDF)…", "export_quote_pdf"),
+            ("Export Issued Quotation (XLSX)…", "export_issued_quote_excel"),
+            ("Export Issued Quotation (PDF)…", "export_issued_quote_pdf"),
+        ):
+            action = QAction(label, export_menu)
+            action.setIcon(export_icon)
+            action.triggered.connect(lambda checked=False, name=method: getattr(self.documents_workspace, name)())
+            export_menu.addAction(action)
+        export_menu.addSeparator()
+        export_menu.addActions([self.complete_kitchen_export_action,
+                                self.export_dxf_action, self.engineering_export_action])
+        export_button.setMenu(export_menu)
+        export_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        add_header_shadow(export_button)
+        header_layout.addWidget(export_button)
+        header_layout.addSpacing(18)
+        header_layout.addWidget(menu_button)
+        toolbar.addWidget(header)
         self.addToolBar(toolbar)
+        self.menuBar().hide()
+        # Hidden native menus remain accessible through Menu. Keep shortcuts
+        # attached to the window rather than depending on menu visibility.
+        self.addActions([self.new_action, self.open_action, self.save_action, self.save_as_action,
+                         self.undo_action, self.redo_action, self.duplicate_action,
+                         self.exit_action, self.fit_all_action, self.maximize_3d_action,
+                         self.manufacturing_preview_action, self.sheet_nesting_action])
 
     @staticmethod
     def _canvas_panel(
@@ -413,7 +597,7 @@ class MainWindow(QMainWindow):
         header = QFrame()
         header.setObjectName("canvasHeader")
         header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(14, 9, 14, 9)
+        header_layout.setContentsMargins(12, 6, 12, 6)
         header_layout.setSpacing(8)
         text_layout = QVBoxLayout()
         text_layout.setContentsMargins(0, 0, 0, 0)
@@ -439,8 +623,11 @@ class MainWindow(QMainWindow):
         self.workspace_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.workspace_splitter.setObjectName("workspaceSplitter")
         self.workspace_splitter.setChildrenCollapsible(False)
-        self.workspace_splitter.setHandleWidth(6)
+        self.workspace_splitter.setHandleWidth(0)
         self.plan_view = RoomPlanView()
+        # The same interactive plan can fit a compact card; expand it for
+        # precise placement instead of retaining its former 380x300 minimum.
+        self.plan_view.setMinimumSize(0, 0)
         self.plan_view.installEventFilter(self)
         self.plan_view.viewport().installEventFilter(self)
         self.plan_view.cabinetSelected.connect(self.select_cabinet)
@@ -458,18 +645,217 @@ class MainWindow(QMainWindow):
         self.plan_view.productMoveRequested.connect(self.move_product)
         self.plan_view.placementRejected.connect(lambda message: self._show_placement_error(ValueError(message)))
         self.view3d = Cabinet3DView()
-        self.plan_panel = self._canvas_panel(
-            "2D ROOM PLAN", "Click to select • drag to move • Esc to cancel", self.plan_view
+        self.view3d.cabinetSelected.connect(self._select_cabinet_from_3d)
+        self.view3d.productSelected.connect(self._select_product_from_3d)
+        self.plan_panel = self._canvas_panel("2D ROOM PLAN", "", self.plan_view)
+        self.model_panel = self._canvas_panel("3D KITCHEN", "", self.view3d)
+        self.model_panel.findChild(QFrame, "canvasHeader").hide()
+        self.plan_room_dimensions = self.plan_panel.findChild(QLabel, "canvasSubtitle")
+        self.plan_room_dimensions.setObjectName("planRoomDimensions")
+        self.plan_expand_button = QToolButton()
+        self.plan_expand_button.setObjectName("planExpandButton")
+        self.plan_expand_button.setText("Open plan")
+        self.plan_expand_button.setIcon(top_icon("maximize", "#965B31"))
+        self.plan_expand_button.setIconSize(QSize(14, 14))
+        self.plan_expand_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.plan_expand_button.clicked.connect(lambda: self._set_plan_expanded(not self.design_stage.plan_expanded))
+        self.plan_panel.findChild(QFrame, "canvasHeader").layout().addWidget(self.plan_expand_button)
+        self.design_stage = DesignStage(self.model_panel, self.plan_panel)
+        live_badge = QLabel("●  LIVE 3D VIEW")
+        live_badge.setObjectName("live3dBadge")
+        self.design_stage.add_overlay(live_badge)
+        viewport_controls = QFrame()
+        viewport_controls.setObjectName("viewportControls")
+        control_shadow = QGraphicsDropShadowEffect(viewport_controls)
+        control_shadow.setBlurRadius(22)
+        control_shadow.setOffset(0, 5)
+        control_shadow.setColor(QColor(45, 37, 29, 45))
+        viewport_controls.setGraphicsEffect(control_shadow)
+        controls_layout = QHBoxLayout(viewport_controls)
+        controls_layout.setContentsMargins(6, 3, 6, 3)
+        controls_layout.setSpacing(1)
+        for caption, icon_name, action in (("Front", "front", self.front_view_action),
+                                           ("Isometric", "isometric", self.isometric_view_action),
+                                           ("Fit", "fit", self.fit_all_action),
+                                           ("Expand", "maximize", self.maximize_3d_action)):
+            button = QToolButton()
+            button.setObjectName("viewportControlButton")
+            button.setText(caption)
+            button.setIcon(top_icon(icon_name, "#524A40"))
+            button.setIconSize(QSize(17, 17))
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+            button.setToolTip(action.text())
+            button.clicked.connect(action.trigger)
+            button.setEnabled(action.isEnabled())
+            action.changed.connect(lambda b=button, a=action: b.setEnabled(a.isEnabled()))
+            controls_layout.addWidget(button)
+        self.interior_view_button = QToolButton()
+        self.interior_view_button.setObjectName("viewportInteriorButton")
+        self.interior_view_button.setText("Interior")
+        self.interior_view_button.setIcon(top_icon("interior", "#524A40", "#FFFFFF"))
+        self.interior_view_button.setIconSize(QSize(17, 17))
+        self.interior_view_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+        self.interior_view_button.setCheckable(True)
+        self.interior_view_button.setToolTip(self.show_interior_action.toolTip())
+        self.interior_view_button.setEnabled(self.show_interior_action.isEnabled())
+        self.show_interior_action.changed.connect(
+            lambda: self.interior_view_button.setEnabled(self.show_interior_action.isEnabled())
         )
-        self.model_panel = self._canvas_panel(
-            "3D CABINET", "Technical CAD / presentation • rotate, pan and zoom",
-            self.view3d, self.maximize_3d_action,
+        self.interior_view_button.clicked.connect(
+            lambda checked: self.show_interior_action.setChecked(checked)
         )
-        self.workspace_splitter.addWidget(self.plan_panel)
-        self.workspace_splitter.addWidget(self.model_panel)
-        self.workspace_splitter.setStretchFactor(0, 1)
-        self.workspace_splitter.setStretchFactor(1, 1)
-        self.workspace_splitter.setSizes([620, 720])
+        self.show_interior_action.toggled.connect(self.interior_view_button.setChecked)
+        controls_layout.addWidget(self.interior_view_button)
+
+        self.viewport_view_button = QToolButton()
+        self.viewport_view_button.setObjectName("viewportViewMenu")
+        self.viewport_view_button.setText("View")
+        self.viewport_view_button.setIcon(top_icon("menu", "#524A40"))
+        self.viewport_view_button.setIconSize(QSize(17, 17))
+        self.viewport_view_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+        self.viewport_view_button.setToolTip("Camera, wall visibility and placement guides")
+        view_options = QMenu(self.viewport_view_button)
+        view_options.addActions([self.reset_3d_action, self.presentation_camera_action,
+                                 self.hide_room_walls_action, self.show_interior_action])
+        view_options.addSeparator()
+        view_options.addActions([self.snap_action, self.grid_snap_action])
+        self.viewport_view_button.setMenu(view_options)
+        self.viewport_view_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        controls_layout.addWidget(self.viewport_view_button)
+        self.design_stage.add_overlay(viewport_controls)
+        selection_card = QFrame()
+        selection_card.setObjectName("viewportSelection")
+        selection_layout = QVBoxLayout(selection_card)
+        selection_layout.setContentsMargins(15, 7, 15, 7)
+        selection_layout.setSpacing(1)
+        self.viewport_selection_title = QLabel()
+        self.viewport_selection_title.setObjectName("viewportSelectionTitle")
+        self.viewport_selection_detail = QLabel()
+        self.viewport_selection_detail.setObjectName("viewportSelectionDetail")
+        selection_layout.addWidget(self.viewport_selection_title)
+        selection_layout.addWidget(self.viewport_selection_detail)
+        self.design_stage.add_overlay(selection_card)
+        design_root = QWidget()
+        design_root.setObjectName("designRoot")
+        design_layout = QVBoxLayout(design_root)
+        design_layout.setContentsMargins(0, 0, 0, 0)
+        design_layout.setSpacing(0)
+        design_header = QFrame()
+        design_header.setObjectName("designHeader")
+        self.design_header = design_header
+        design_header.installEventFilter(self)
+        design_header_layout = QHBoxLayout(design_header)
+        design_header_layout.setContentsMargins(14, 12, 61, 4)
+        design_header_layout.setSpacing(0)
+        title_stack = QVBoxLayout()
+        title_stack.setSpacing(0)
+        title = QLabel("Design Studio")
+        title.setObjectName("designTitle")
+        title.setFixedHeight(42)
+        title_stack.addWidget(title)
+        underline = QFrame()
+        underline.setObjectName("designTitleUnderline")
+        underline.setFixedSize(48, 2)
+        title_stack.addWidget(underline)
+        design_header_layout.addLayout(title_stack)
+        design_header_layout.setAlignment(title_stack, Qt.AlignmentFlag.AlignTop)
+        design_header_layout.addStretch(1)
+        def view_icon(name: str) -> QIcon:
+            return top_icon(name, "#343B35", "#FFFFFF")
+
+        presentation_button = QToolButton()
+        self.presentation_mode_button = presentation_button
+        presentation_button.setObjectName("presentationModeButton")
+        presentation_button.setText("Presentation")
+        presentation_button.setIcon(top_icon("presentation", "#343B35"))
+        presentation_button.setIconSize(QSize(19, 19))
+        presentation_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        presentation_button.setCheckable(True)
+        presentation_button.clicked.connect(self.presentation_view_action.trigger)
+        self.presentation_view_action.toggled.connect(presentation_button.setChecked)
+        self.technical_view_button = QToolButton()
+        self.technical_view_button.setObjectName("technicalModeButton")
+        self.technical_view_button.setText("3D View")
+        self.technical_view_button.setIcon(view_icon("isometric"))
+        self.technical_view_button.setIconSize(QSize(19, 19))
+        self.technical_view_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.technical_view_button.setCheckable(True)
+        self.technical_view_button.setChecked(True)
+        self.technical_view_button.clicked.connect(
+            lambda: (self._set_plan_expanded(False), self.presentation_view_action.setChecked(False))
+        )
+        self.plan_toggle_button = QToolButton()
+        self.plan_toggle_button.setObjectName("designPlanButton")
+        self.plan_toggle_button.setText("2D Plan")
+        self.plan_toggle_button.setIcon(view_icon("plan"))
+        self.plan_toggle_button.setIconSize(QSize(19, 19))
+        self.plan_toggle_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.plan_toggle_button.setCheckable(True)
+        self.plan_toggle_button.clicked.connect(lambda: self._set_plan_expanded(not self.design_stage.plan_expanded))
+        for button, width in ((self.technical_view_button, 164),
+                              (self.plan_toggle_button, 174),
+                              (presentation_button, 190)):
+            button.setFixedWidth(width)
+            design_header_layout.addWidget(button)
+            if button is self.plan_toggle_button:
+                design_header_layout.addSpacing(16)
+        design_layout.addWidget(design_header)
+        design_tools = QFrame()
+        design_tools.setObjectName("designTools")
+        tools_layout = QHBoxLayout(design_tools)
+        tools_layout.setContentsMargins(14, 6, 12, 6)
+        tools_layout.setSpacing(5)
+        self.design_tool_buttons = {}
+        for caption, icon_name, handler, tooltip in (
+            ("Select", "select", lambda: self._set_plan_expanded(True), "Select and edit objects in the 2D plan"),
+            ("Place", "place", lambda: self.explorer_tabs.setCurrentWidget(self.library_page), "Browse products and place them in the 2D plan"),
+            ("Move", "move", lambda: self._set_plan_expanded(True), "Move selected objects in the 2D plan"),
+            ("Snap", "snap", self.snap_action.trigger, self.snap_action.toolTip()),
+            ("Grid", "grid", self.grid_snap_action.trigger, "Toggle the 100 mm placement grid"),
+            ("Duplicate", "duplicate", self.duplicate_action.trigger, "Duplicate selected object"),
+            ("Delete", "delete", self.remove_cabinet_action.trigger, "Remove selected object"),
+            ("Front", "front", self.front_view_action.trigger, "Front view"),
+            ("Isometric", "isometric", self.isometric_view_action.trigger, "Isometric view"),
+            ("Interior", "interior", self.show_interior_action.trigger, self.show_interior_action.toolTip()),
+            ("Reset", "reset", self.reset_3d_action.trigger, "Reset camera view"),
+            ("Max", "maximize", self.maximize_3d_action.trigger, "Maximize or restore the 3D viewport"),
+            ("Fit", "fit", self.fit_all_action.trigger, "Fit the complete kitchen"),
+        ):
+            if caption == "Front":
+                tools_layout.addSpacing(2)
+                separator = QFrame()
+                separator.setObjectName("designToolsSeparator")
+                separator.setFrameShape(QFrame.Shape.VLine)
+                tools_layout.addWidget(separator)
+                tools_layout.addSpacing(2)
+            button = QToolButton()
+            button.setObjectName("designToolButton")
+            button.setProperty("primary", caption == "Select")
+            button.setText(caption)
+            button.setIcon(top_icon(icon_name, "#8A502B" if caption == "Select" else "#343B35"))
+            button.setIconSize(QSize(20, 20))
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+            button.setToolTip(tooltip)
+            button.setFixedWidth(
+                70 if caption == "Duplicate" else 66 if caption == "Isometric"
+                else 60 if caption in ("Front", "Interior", "Reset", "Max", "Fit") else 62
+            )
+            button.setFixedHeight(52)
+            button.clicked.connect(handler)
+            if caption in ("Snap", "Grid", "Interior", "Max"):
+                action = {"Snap": self.snap_action, "Grid": self.grid_snap_action,
+                          "Interior": self.show_interior_action, "Max": self.maximize_3d_action}[caption]
+                button.setCheckable(True)
+                button.setChecked(action.isChecked())
+                action.toggled.connect(button.setChecked)
+            tools_layout.addWidget(button)
+            self.design_tool_buttons[caption] = button
+        tools_layout.addStretch(1)
+        self.design_tools = design_tools
+        design_tools.installEventFilter(self)
+        design_layout.addWidget(design_tools)
+        design_layout.addWidget(self.design_stage, 1)
+        self.workspace_splitter.addWidget(design_root)
         self.manufacturing_preview = ManufacturingPreviewWidget()
         self.manufacturing_preview.set_cabinet(self.project.selected_cabinet)
         self.sheet_nesting = SheetNestingWidget()
@@ -481,7 +867,8 @@ class MainWindow(QMainWindow):
             self.generate_design_proposal, self.apply_design_proposal, self.reject_design_proposal
         )
         self.realistic_render_workspace = RealisticRenderWorkspace(
-            self.view3d, lambda: project_fingerprint(self.project), self._capture_render_scene
+            self.view3d, lambda: project_fingerprint(self.project), self._capture_render_scene,
+            context_callback=lambda: project_render_context(self.project),
         )
         self.workspace_tabs = QTabWidget()
         self.workspace_tabs.setObjectName("workspaceTabs")
@@ -493,22 +880,74 @@ class MainWindow(QMainWindow):
         self.workspace_tabs.addTab(self.ai_design_workspace, "Design Assistant")
         self.workspace_tabs.addTab(self.realistic_render_workspace, "Realistic Rendering")
         self.workspace_tabs.currentChanged.connect(self._workspace_changed)
+        self.workspace_tabs.tabBar().hide()
         self.setCentralWidget(self.workspace_tabs)
+
+    def _set_plan_expanded(self, expanded: bool) -> None:
+        self.design_stage.set_plan_expanded(expanded)
+        self.plan_expand_button.setText("Compact plan" if expanded else "Open plan")
+        self.plan_toggle_button.setText("Compact plan" if expanded else "2D Plan")
+        self.plan_toggle_button.setChecked(expanded)
+        self.technical_view_button.setChecked(not expanded)
+        self.statusBar().showMessage("2D plan expanded for placement and editing" if expanded else "Compact 2D plan")
 
     def _build_explorer(self) -> None:
         self.explorer_dock = QDockWidget("PROJECT & CATALOGUE", self)
         self.explorer_dock.setObjectName("explorerDock")
-        self.explorer_dock.setMinimumWidth(270)
+        self.explorer_dock.setMinimumWidth(370)
         self.project_tree = QTreeWidget()
         self.project_tree.installEventFilter(self)
         self.project_tree.viewport().installEventFilter(self)
         self.project_tree.setHeaderHidden(True)
-        self.project_tree.setIndentation(18)
+        self.project_tree.setIndentation(15)
         self.project_tree.setUniformRowHeights(True)
         self.project_tree.setAnimated(True)
         self.project_tree.itemClicked.connect(self._tree_item_clicked)
         self.explorer_tabs = QTabWidget()
-        self.explorer_tabs.addTab(self.project_tree, "Project")
+        self.explorer_tabs.setObjectName("explorerTabs")
+        objects_page = QWidget()
+        objects_layout = QVBoxLayout(objects_page)
+        objects_layout.setContentsMargins(12, 17, 5, 9)
+        objects_layout.setSpacing(1)
+        self._cabinet_cards_collapsed = False
+        self._appliance_cards_collapsed = False
+        cabinet_heading = QWidget()
+        cabinet_heading.setObjectName("sidebarCabinetHeading")
+        cabinet_heading_layout = QHBoxLayout(cabinet_heading)
+        cabinet_heading_layout.setContentsMargins(4, 0, 3, 0)
+        cabinet_heading_layout.setSpacing(0)
+        self.cabinet_count_label = QLabel("Cabinets (0)")
+        self.cabinet_count_label.setObjectName("sidebarSectionTitle")
+        self.cabinet_collapse_button = QToolButton()
+        self.cabinet_collapse_button.setObjectName("sidebarCollapseButton")
+        self.cabinet_collapse_button.setText("⌃")
+        self.cabinet_collapse_button.setToolTip("Collapse cabinet cards")
+        self.cabinet_collapse_button.clicked.connect(self._toggle_cabinet_cards)
+        cabinet_heading_layout.addWidget(self.cabinet_count_label)
+        cabinet_heading_layout.addStretch(1)
+        cabinet_heading_layout.addWidget(self.cabinet_collapse_button)
+        self.object_list = QListWidget()
+        self.object_list.setObjectName("objectList")
+        self.object_list.setSpacing(0)
+        self.object_list.setMouseTracking(True)
+        self.object_list.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.object_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.object_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.object_list.setItemDelegate(SidebarCardDelegate(self.object_list))
+        self.object_list.itemClicked.connect(self._object_card_clicked)
+        self.object_summary = QLabel()
+        self.object_summary.setObjectName("objectSummary")
+        self.object_summary.setWordWrap(True)
+        self.object_summary.hide()
+        self.browse_library_button = QPushButton("＋  Browse Product Library")
+        self.browse_library_button.setObjectName("browseLibraryButton")
+        self.browse_library_button.clicked.connect(lambda: self.explorer_tabs.setCurrentWidget(self.library_page))
+        objects_layout.addWidget(cabinet_heading)
+        objects_layout.addWidget(self.object_list, 1)
+        objects_layout.addWidget(self.object_summary)
+        objects_layout.addWidget(self.browse_library_button)
+        self.explorer_tabs.addTab(objects_page, "Objects")
+        self.explorer_tabs.addTab(self.project_tree, "Hierarchy")
         catalogue_page = QWidget()
         catalogue_layout = QVBoxLayout(catalogue_page)
         catalogue_layout.setContentsMargins(8, 10, 8, 10)
@@ -541,7 +980,7 @@ class MainWindow(QMainWindow):
         self.library_category_combo = QComboBox()
         self.library_list = QListWidget()
         self.library_list.setAlternatingRowColors(True)
-        self.library_list.setIconSize(QSize(76, 60))
+        self.library_list.setIconSize(QSize(54, 48))
         self.library_description = QLabel()
         self.library_description.setWordWrap(True)
         self.hardware_quantity_spin = self._spin(1, 100, "")
@@ -556,7 +995,9 @@ class MainWindow(QMainWindow):
         library_manage.addWidget(self.library_edit_button)
         self.library_remove_hardware_button = QPushButton("Remove selected hardware assignment")
         self.library_remove_hardware_button.hide()
-        library_layout.addWidget(QLabel("PRODUCT LIBRARY"))
+        library_heading = QLabel("PRODUCT LIBRARY")
+        library_heading.setObjectName("sidebarSectionTitle")
+        library_layout.addWidget(library_heading)
         library_layout.addWidget(self.library_combo)
         library_layout.addWidget(self.library_family_combo)
         library_layout.addWidget(self.library_category_combo)
@@ -571,8 +1012,132 @@ class MainWindow(QMainWindow):
         self.explorer_tabs.addTab(library_page, "Libraries")
         # The original catalogue widgets remain available to legacy scripts,
         # while users browse one unified product-library interface.
-        self.explorer_tabs.setTabVisible(1, False)
-        self.explorer_dock.setWidget(self.explorer_tabs)
+        self.explorer_tabs.tabBar().moveTab(3, 1)
+        self.explorer_tabs.setTabVisible(3, False)
+        self.explorer_tabs.setCurrentWidget(objects_page)
+        self.explorer_tabs.currentChanged.connect(lambda _index: self._sync_workspace_rail())
+        navigation = QFrame()
+        navigation.setObjectName("workspaceRail")
+        navigation.setFixedWidth(96)
+        rail_layout = QVBoxLayout(navigation)
+        rail_layout.setContentsMargins(6, 23, 6, 8)
+        rail_layout.setSpacing(6)
+        self.rail_buttons = []
+        for caption, icon_name, target in (
+            ("Design Studio", "design", self.workspace_splitter),
+            ("Libraries", "library", self.workspace_splitter),
+            ("Project", "project", self.workspace_splitter),
+            ("Materials", "materials", self.workspace_splitter),
+            ("Manufacturing", "engineering", self.manufacturing_preview),
+            ("Sheet Nesting", "nesting", self.sheet_nesting),
+            ("BOM & Quotation", "documents", self.documents_workspace),
+            ("Design Assistant", "assistant", self.ai_design_workspace),
+            ("Realistic Rendering", "render", self.realistic_render_workspace),
+        ):
+            button = QToolButton(navigation)
+            button.setObjectName("railButton")
+            rail_icon = {"library": "layers", "engineering": "gear"}.get(icon_name, icon_name)
+            button.setIcon(outline_icon(rail_icon, "#454C40"))
+            button.setIconSize(QSize(25, 25))
+            button.setText({
+                "Design Studio": "Design\nStudio",
+                "Sheet Nesting": "Sheet Nesting",
+                "BOM & Quotation": "BOM &\nQuotation",
+                "Design Assistant": "Design\nAssistant",
+                "Realistic Rendering": "Realistic\nRendering",
+            }.get(caption, caption))
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+            button.setFixedSize(82, 70)
+            if icon_name in ("engineering", "nesting"):
+                button.setProperty("compactLabel", True)
+                compact_font = QFont(button.font())
+                compact_font.setPointSizeF(7.0)
+                button.setFont(compact_font)
+            button.setToolTip(caption)
+            button.clicked.connect(lambda _checked=False, page=target, icon=icon_name:
+                                   self._navigate_rail(page, icon))
+            self.rail_buttons.append((button, target, icon_name))
+            if icon_name in ("project", "materials"):
+                button.hide()  # These remain available from the project dropdown.
+            else:
+                rail_layout.addWidget(button)
+        rail_layout.addStretch(1)
+        self.rail_settings_button = QToolButton(navigation)
+        self.rail_settings_button.setObjectName("railFooterButton")
+        self.rail_settings_button.setIcon(outline_icon("gear", "#343A35"))
+        self.rail_settings_button.setIconSize(QSize(21, 21))
+        self.rail_settings_button.setText("Settings")
+        self.rail_settings_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+        self.rail_settings_button.setFixedSize(82, 47)
+        settings_menu = QMenu(self.rail_settings_button)
+        settings_menu.addActions([self.price_setup_action, self.price_refresh_action])
+        self.rail_settings_menu = settings_menu
+        self.rail_settings_button.clicked.connect(
+            lambda: settings_menu.popup(
+                self.rail_settings_button.mapToGlobal(self.rail_settings_button.rect().topRight())
+            )
+        )
+        self.rail_settings_button.setToolTip("Company pricing settings")
+        rail_layout.addWidget(self.rail_settings_button)
+        self.rail_help_button = QToolButton(navigation)
+        self.rail_help_button.setObjectName("railFooterButton")
+        self.rail_help_button.setIcon(outline_icon("help", "#343A35"))
+        self.rail_help_button.setIconSize(QSize(21, 21))
+        self.rail_help_button.setText("Help")
+        self.rail_help_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+        self.rail_help_button.setFixedSize(82, 47)
+        self.rail_help_button.clicked.connect(self.about_action.trigger)
+        rail_layout.addWidget(self.rail_help_button)
+        sidebar = QWidget()
+        sidebar.setObjectName("projectSidebar")
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(0, 0, 0, 0)
+        sidebar_layout.setSpacing(0)
+        sidebar_heading = QWidget()
+        sidebar_heading.setObjectName("sidebarHeading")
+        sidebar_heading.setMinimumHeight(76)
+        heading_layout = QVBoxLayout(sidebar_heading)
+        heading_layout.setContentsMargins(15, 10, 11, 8)
+        heading_layout.setSpacing(3)
+        heading_label = QLabel("PROJECT")
+        heading_label.setObjectName("sidebarEyebrow")
+        self.sidebar_project_label = QLabel("Kitchen workspace")
+        self.sidebar_project_label.setObjectName("sidebarProjectName")
+        self.sidebar_project_label.setWordWrap(False)
+        self.sidebar_project_label.setMinimumWidth(0)
+        project_row = QHBoxLayout()
+        project_row.setContentsMargins(0, 0, 0, 0)
+        project_row.setSpacing(7)
+        project_icon = QLabel()
+        project_icon.setObjectName("sidebarProjectIcon")
+        project_icon.setPixmap(outline_icon("project", "#A76637").pixmap(QSize(21, 21)))
+        self.sidebar_project_menu_button = QToolButton()
+        self.sidebar_project_menu_button.setObjectName("sidebarProjectMenu")
+        self.sidebar_project_menu_button.setText("")
+        self.sidebar_project_menu_button.setToolTip("Project and materials navigation")
+        project_menu = QMenu(self.sidebar_project_menu_button)
+        project_menu.addAction("Project hierarchy", lambda: self._navigate_rail(self.workspace_splitter, "project"))
+        project_menu.addAction("Materials", lambda: self._navigate_rail(self.workspace_splitter, "materials"))
+        project_menu.addSeparator()
+        project_menu.addActions([self.new_action, self.open_action, self.save_action])
+        self.sidebar_project_menu_button.setMenu(project_menu)
+        self.sidebar_project_menu_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        heading_layout.addWidget(heading_label)
+        project_row.addWidget(project_icon)
+        project_row.addWidget(self.sidebar_project_label, 1)
+        project_row.addWidget(self.sidebar_project_menu_button)
+        heading_layout.addLayout(project_row)
+        sidebar_layout.addWidget(sidebar_heading)
+        sidebar_layout.addWidget(self.explorer_tabs, 1)
+        dock_content = QWidget()
+        dock_content.setObjectName("explorerContent")
+        dock_layout = QHBoxLayout(dock_content)
+        dock_layout.setContentsMargins(0, 0, 0, 0)
+        dock_layout.setSpacing(0)
+        dock_layout.addWidget(navigation)
+        dock_layout.addWidget(sidebar, 1)
+        self.explorer_dock.setTitleBarWidget(QWidget())
+        self.explorer_dock.setWidget(dock_content)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.explorer_dock)
         self.catalogue_category_combo.currentTextChanged.connect(self._populate_catalogue)
         self.catalogue_list.currentItemChanged.connect(self._catalogue_selection_changed)
@@ -591,6 +1156,100 @@ class MainWindow(QMainWindow):
         self.library_remove_hardware_button.clicked.connect(self.remove_selected_hardware_assignment)
         self.library_list.itemDoubleClicked.connect(lambda _item: self.begin_library_placement())
         self._populate_product_library()
+        self._sync_workspace_rail()
+
+    def _navigate_workspace(self, page: QWidget, library: bool = False) -> None:
+        self._rail_material_active = False
+        self.workspace_tabs.setCurrentWidget(page)
+        if page is self.workspace_splitter:
+            self.explorer_tabs.setCurrentWidget(self.library_page if library else self.explorer_tabs.widget(0))
+        self._sync_workspace_rail()
+
+    def _navigate_rail(self, page: QWidget, icon_name: str) -> None:
+        if icon_name == "project":
+            self._rail_material_active = False
+            self.workspace_tabs.setCurrentWidget(self.workspace_splitter)
+            self.explorer_tabs.setCurrentWidget(self.project_tree)
+        elif icon_name == "materials":
+            self._rail_material_active = True
+            self.workspace_tabs.setCurrentWidget(self.workspace_splitter)
+            self.explorer_tabs.setCurrentWidget(self.explorer_tabs.widget(0))
+            self._show_inspector_tab("material")
+        else:
+            self._navigate_workspace(page, library=icon_name == "library")
+        self._sync_workspace_rail()
+
+    def _sync_workspace_rail(self) -> None:
+        if not hasattr(self, "rail_buttons"):
+            return
+        active = self.workspace_tabs.currentWidget()
+        library_active = self.explorer_tabs.currentWidget() is self.library_page
+        project_active = self.explorer_tabs.currentWidget() is self.project_tree
+        for button, page, icon_name in self.rail_buttons:
+            if page is not active:
+                selected = False
+            elif icon_name == "library":
+                selected = library_active
+            elif icon_name == "project":
+                selected = project_active
+            elif icon_name == "materials":
+                selected = self._rail_material_active and not library_active and not project_active
+            elif icon_name == "design":
+                selected = not library_active
+            else:
+                selected = True
+            button.setProperty("active", selected)
+            rail_icon = {"library": "layers", "engineering": "gear"}.get(icon_name, icon_name)
+            button.setIcon(outline_icon(rail_icon, "#FFFFFF" if selected else "#454C40"))
+            if selected and button.graphicsEffect() is None:
+                shadow = QGraphicsDropShadowEffect(button)
+                shadow.setBlurRadius(15)
+                shadow.setOffset(0, 3)
+                shadow.setColor(QColor(62, 72, 51, 65))
+                button.setGraphicsEffect(shadow)
+            elif not selected and button.graphicsEffect() is not None:
+                button.setGraphicsEffect(None)
+            button.style().unpolish(button)
+            button.style().polish(button)
+
+    def _object_card_clicked(self, item: QListWidgetItem) -> None:
+        if item.data(KIND_ROLE) == "section":
+            if item.data(NAME_ROLE) == "Appliances":
+                self._toggle_appliance_cards()
+            return
+        item_id = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(item_id, str):
+            return
+        if item_id.startswith("catalogue:"):
+            type_id = item_id.split(":", 1)[1]
+            self.library_combo.setCurrentText(APPLIANCES)
+            for row in range(self.library_list.count()):
+                if self.library_list.item(row).data(Qt.ItemDataRole.UserRole) == type_id:
+                    self.library_list.setCurrentRow(row)
+                    break
+            self.explorer_tabs.setCurrentWidget(self.library_page)
+        elif item_id.startswith("opening:"):
+            self.select_opening(item_id.split(":", 1)[1])
+        elif item_id.startswith("product:"):
+            self.select_product(item_id.split(":", 1)[1])
+        else:
+            self.select_cabinet(item_id)
+
+    def _toggle_cabinet_cards(self) -> None:
+        self._cabinet_cards_collapsed = not self._cabinet_cards_collapsed
+        self.cabinet_collapse_button.setText("⌄" if self._cabinet_cards_collapsed else "⌃")
+        self.cabinet_collapse_button.setToolTip(
+            "Expand cabinet cards" if self._cabinet_cards_collapsed else "Collapse cabinet cards"
+        )
+        for item in self._cabinet_card_items:
+            item.setHidden(self._cabinet_cards_collapsed)
+
+    def _toggle_appliance_cards(self) -> None:
+        self._appliance_cards_collapsed = not self._appliance_cards_collapsed
+        self.appliance_section_item.setData(EXPANDED_ROLE, not self._appliance_cards_collapsed)
+        for item in self._appliance_card_items:
+            item.setHidden(self._appliance_cards_collapsed)
+        self.object_list.viewport().update()
 
     def _populate_product_library(self, *_args, update_categories: bool = True) -> None:
         library = self.library_combo.currentText()
@@ -616,7 +1275,8 @@ class MainWindow(QMainWindow):
                       else product_thumbnail(get_product(type_id)))
             row = QListWidgetItem(QIcon(pixmap), f"{name}\n{category} · {width} × {depth} × {height} mm")
             row.setData(Qt.ItemDataRole.UserRole, type_id)
-            row.setSizeHint(QSize(0, 48))
+            row.setSizeHint(QSize(0, 58))
+            row.setToolTip(f"{name}\n{category} · {width} × {depth} × {height} mm")
             self.library_list.addItem(row)
         if rows:
             self.library_list.setCurrentRow(0)
@@ -632,6 +1292,15 @@ class MainWindow(QMainWindow):
             self.library_description.clear()
             return
         library = self.library_combo.currentText()
+        try:
+            selected = (get_catalogue_item(current.data(Qt.ItemDataRole.UserRole))
+                        if library == FURNITURE else get_product(current.data(Qt.ItemDataRole.UserRole)))
+        except ValueError:
+            # Category changes can briefly emit a selection signal for the old list.
+            self.library_description.clear()
+            return
+        details = (f"{selected.name} · {selected.category}\n"
+                   f"{selected.width} × {selected.depth} × {selected.height} mm\n")
         if library == PROPS:
             note = "Visual only · excluded from BOM, nesting, drilling and exports."
         elif library == HARDWARE:
@@ -644,7 +1313,7 @@ class MainWindow(QMainWindow):
                     "Pricing is saved in Company Price Setup; existing projects keep their snapshots."
                     if definition.product_id else
                     "Furniture uses existing illustrative cabinet construction rules.")
-        self.library_description.setText(note)
+        self.library_description.setText(details + note)
 
     def create_library_cabinet(self) -> None:
         self._edit_library_cabinet(None)
@@ -740,9 +1409,10 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _spin(minimum: int, maximum: int, suffix: str = " mm") -> QSpinBox:
-        spin = QSpinBox()
+        spin = InspectorSpinBox()
         spin.setRange(minimum, maximum)
         spin.setSuffix(suffix)
+        spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.PlusMinus)
         spin.setKeyboardTracking(False)
         return spin
 
@@ -751,12 +1421,25 @@ class MainWindow(QMainWindow):
         self.properties_dock.setObjectName("propertiesDock")
         wrapper = QWidget()
         layout = QVBoxLayout(wrapper)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(12)
+        layout.setContentsMargins(12, 14, 12, 16)
+        layout.setSpacing(9)
+        eyebrow = QLabel("INSPECTOR")
+        eyebrow.setObjectName("inspectorEyebrow")
+        self.inspector_title = QLabel()
+        self.inspector_title.setObjectName("inspectorTitle")
+        self.inspector_subtitle = QLabel()
+        self.inspector_subtitle.setObjectName("inspectorSubtitle")
+        layout.addWidget(eyebrow)
+        layout.addWidget(self.inspector_title)
+        layout.addWidget(self.inspector_subtitle)
+        self.inspector_title.hide()
+        self.inspector_subtitle.hide()
         room_group = QGroupBox("Room")
+        room_group.setObjectName("inspectorFormCard")
+        self.room_group = room_group
         room_form = QFormLayout(room_group)
-        room_form.setHorizontalSpacing(14)
-        room_form.setVerticalSpacing(9)
+        room_form.setHorizontalSpacing(8)
+        room_form.setVerticalSpacing(6)
         self.room_width_spin = self._spin(1200, 20000)
         self.room_depth_spin = self._spin(1200, 20000)
         self.room_height_spin = self._spin(2100, 5000)
@@ -765,12 +1448,14 @@ class MainWindow(QMainWindow):
         room_form.addRow("Wall height", self.room_height_spin)
 
         self.opening_group = QGroupBox("Room openings")
+        self.opening_group.setObjectName("inspectorFormCard")
         opening_form = QFormLayout(self.opening_group)
-        opening_form.setHorizontalSpacing(14)
-        opening_form.setVerticalSpacing(8)
+        opening_form.setHorizontalSpacing(8)
+        opening_form.setVerticalSpacing(6)
         self.opening_id_label = QLabel("None")
         self.opening_id_label.setObjectName("cabinetIdBadge")
         self.opening_kind_label = QLabel("—")
+        self.opening_kind_label.setObjectName("inspectorObjectName")
         self.opening_wall_combo = QComboBox()
         for wall_id in WALL_IDS:
             self.opening_wall_combo.addItem(WALL_LABELS[wall_id], wall_id)
@@ -801,13 +1486,17 @@ class MainWindow(QMainWindow):
         opening_form.addRow(opening_buttons)
         self.remove_opening_button = QPushButton("Remove Opening")
         opening_form.addRow(self.remove_opening_button)
-        self.cabinet_group = QGroupBox("Selected cabinet")
-        form = QFormLayout(self.cabinet_group)
-        form.setHorizontalSpacing(14)
-        form.setVerticalSpacing(9)
+        self.cabinet_group = QGroupBox()
+        self.cabinet_group.setObjectName("selectedObjectGroup")
+        cabinet_layout = QVBoxLayout(self.cabinet_group)
+        cabinet_layout.setContentsMargins(0, 3, 0, 3)
+        cabinet_layout.setSpacing(8)
         self.width_spin = self._spin(300, 3000)
         self.height_spin = self._spin(300, 3000)
         self.depth_spin = self._spin(200, 1200)
+        for dimension_spin in (self.width_spin, self.height_spin, self.depth_spin):
+            dimension_spin.setMinimumWidth(68)
+            dimension_spin.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.thickness_spin = self._spin(10, 50)
         self.door_spin = self._spin(0, 6, "")
         self.drawer_spin = self._spin(0, 8, "")
@@ -817,27 +1506,102 @@ class MainWindow(QMainWindow):
         self.cabinet_id_label = QLabel()
         self.cabinet_id_label.setObjectName("cabinetIdBadge")
         self.cabinet_type_label = QLabel()
+        self.cabinet_type_label.setObjectName("inspectorObjectName")
         self.cabinet_category_label = QLabel()
+        self.cabinet_category_label.setWordWrap(True)
         self.cabinet_duplicate_button = QPushButton("Duplicate cabinet")
         self.position_x_spin = self._spin(0, 20000)
         self.position_y_spin = self._spin(0, 20000)
-        form.addRow("Cabinet ID", self.cabinet_id_label)
-        form.addRow("Furniture type", self.cabinet_type_label)
-        form.addRow("Category", self.cabinet_category_label)
-        for label, widget in [
-            ("Width", self.width_spin), ("Height", self.height_spin), ("Depth", self.depth_spin),
-            ("Board thickness", self.thickness_spin),
-            ("Position X", self.position_x_spin), ("Position Y", self.position_y_spin),
-        ]:
-            form.addRow(label, widget)
+        self.inspector_identity = QFrame()
+        self.inspector_identity.setObjectName("inspectorIdentity")
+        identity_layout = QHBoxLayout(self.inspector_identity)
+        identity_layout.setContentsMargins(11, 9, 11, 9)
+        self.inspector_thumbnail = QLabel()
+        self.inspector_thumbnail.setFixedSize(55, 55)
+        self.inspector_thumbnail.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.inspector_thumbnail.setObjectName("inspectorThumbnail")
+        identity_layout.addWidget(self.inspector_thumbnail)
+        identity_text = QVBoxLayout()
+        identity_text.setSpacing(1)
+        identity_text.addWidget(self.cabinet_type_label)
+        identity_text.addWidget(self.cabinet_category_label)
+        identity_layout.addLayout(identity_text, 1)
+        identity_layout.addWidget(self.cabinet_id_label)
+        layout.addWidget(self.inspector_identity)
+        inspector_tabs = QFrame()
+        inspector_tabs.setObjectName("inspectorTabs")
+        tabs_layout = QHBoxLayout(inspector_tabs)
+        tabs_layout.setContentsMargins(1, 0, 1, 0)
+        tabs_layout.setSpacing(3)
+        tab_buttons = []
+        for caption in ("Properties", "Material", "Details"):
+            tab_button = QToolButton()
+            tab_button.setObjectName("inspectorTab")
+            tab_button.setText(caption)
+            tabs_layout.addWidget(tab_button, 1)
+            tab_buttons.append(tab_button)
+        cabinet_layout.addWidget(inspector_tabs)
+        self.inspector_tabs = inspector_tabs
+        self.inspector_tab_buttons = tab_buttons
+
+        def section(title: str) -> tuple[QFrame, QGridLayout]:
+            card = QFrame()
+            card.setObjectName("inspectorCard")
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(11, 8, 11, 10)
+            card_layout.setSpacing(6)
+            heading = QLabel(title)
+            heading.setObjectName("inspectorSection")
+            card_layout.addWidget(heading)
+            grid = QGridLayout()
+            grid.setHorizontalSpacing(9)
+            grid.setVerticalSpacing(8)
+            card_layout.addLayout(grid)
+            cabinet_layout.addWidget(card)
+            return card, grid
+
+        def field(grid: QGridLayout, row: int, column: int, label: QLabel | str, control: QWidget) -> QWidget:
+            field_box = QWidget()
+            field_layout = QVBoxLayout(field_box)
+            field_layout.setContentsMargins(0, 0, 0, 0)
+            field_layout.setSpacing(3)
+            label_widget = label if isinstance(label, QLabel) else QLabel(label)
+            label_widget.setObjectName("inspectorFieldLabel")
+            field_layout.addWidget(label_widget)
+            field_layout.addWidget(control)
+            grid.addWidget(field_box, row, column)
+            return field_box
+
+        position_card, position_grid = section("POSITION")
+        field(position_grid, 0, 0, "X · MM", self.position_x_spin)
+        field(position_grid, 0, 1, "Y · MM", self.position_y_spin)
+        self.dimensions_card, dimensions_grid = section("DIMENSIONS")
+        field(dimensions_grid, 0, 0, "WIDTH · MM", self.width_spin)
+        field(dimensions_grid, 0, 1, "HEIGHT · MM", self.height_spin)
+        field(dimensions_grid, 0, 2, "DEPTH · MM", self.depth_spin)
+        field(dimensions_grid, 1, 0, "BOARD · MM", self.thickness_spin)
         self.door_label = QLabel("Door count")
         self.drawer_label = QLabel("Drawer count")
         self.shelf_label = QLabel("Shelf count")
-        form.insertRow(6, self.door_label, self.door_spin)
-        form.insertRow(7, self.drawer_label, self.drawer_spin)
-        form.insertRow(8, self.shelf_label, self.shelf_spin)
-        form.insertRow(9, "Material / finish", self.material_combo)
-        form.addRow(self.cabinet_duplicate_button)
+        configuration_card, configuration_grid = section("CONFIGURATION")
+        self.door_field = field(configuration_grid, 0, 0, self.door_label, self.door_spin)
+        self.drawer_field = field(configuration_grid, 0, 1, self.drawer_label, self.drawer_spin)
+        self.shelf_field = field(configuration_grid, 1, 0, self.shelf_label, self.shelf_spin)
+        self.configuration_grid = configuration_grid
+        self.position_card = position_card
+        self.configuration_card = configuration_card
+        self.material_card, material_grid = section("MATERIAL / FINISH")
+        finish_control = QWidget()
+        finish_layout = QHBoxLayout(finish_control)
+        finish_layout.setContentsMargins(0, 0, 0, 0)
+        finish_layout.setSpacing(8)
+        self.finish_swatch = QLabel()
+        self.finish_swatch.setObjectName("finishSwatch")
+        self.finish_swatch.setFixedSize(31, 31)
+        finish_layout.addWidget(self.finish_swatch)
+        finish_layout.addWidget(self.material_combo, 1)
+        field(material_grid, 0, 0, "FINISH", finish_control)
+        material_grid.addWidget(self.cabinet_duplicate_button, 1, 0)
         self.cabinet_duplicate_button.clicked.connect(self.duplicate_selected_object)
         self.placement_warning = QLabel()
         self.placement_warning.setObjectName("placementWarning")
@@ -846,13 +1610,14 @@ class MainWindow(QMainWindow):
         note = QLabel("Demo rules only — not factory approved")
         note.setWordWrap(True)
         note.setObjectName("warningLabel")
-        layout.addWidget(room_group)
         layout.addWidget(self.opening_group)
         layout.addWidget(self.cabinet_group)
         self.product_group = QGroupBox("Selected library product")
+        self.product_group.setObjectName("inspectorFormCard")
         product_form = QFormLayout(self.product_group)
         self.product_id_label = QLabel()
         self.product_name_label = QLabel()
+        self.product_name_label.setObjectName("inspectorObjectName")
         self.product_rule_label = QLabel()
         self.product_rule_label.setWordWrap(True)
         self.product_rule_label.setMaximumWidth(210)
@@ -862,6 +1627,10 @@ class MainWindow(QMainWindow):
         self.product_width_spin = self._spin(20, 3000)
         self.product_depth_spin = self._spin(20, 3000)
         self.product_height_spin = self._spin(10, 3000)
+        self.product_orientation_combo = QComboBox()
+        for angle in (0, 90, 180, 270):
+            self.product_orientation_combo.addItem(f"{angle}°", angle)
+        self.product_orientation_label = QLabel("Rotation")
         self.product_remove_button = QPushButton("Remove selected product")
         self.product_duplicate_button = QPushButton("Duplicate product")
         product_form.addRow("Product ID", self.product_id_label)
@@ -872,6 +1641,8 @@ class MainWindow(QMainWindow):
                                ("Depth", self.product_depth_spin), ("Height", self.product_height_spin)):
             product_form.addRow(label, control)
             control.valueChanged.connect(self._product_properties_changed)
+        product_form.addRow(self.product_orientation_label, self.product_orientation_combo)
+        self.product_orientation_combo.currentIndexChanged.connect(self._product_properties_changed)
         product_form.addRow(self.product_remove_button)
         product_form.addRow(self.product_duplicate_button)
         self.product_treatment_group = QGroupBox("Product treatment")
@@ -893,6 +1664,7 @@ class MainWindow(QMainWindow):
         self.product_duplicate_button.clicked.connect(self.duplicate_selected_object)
         self.product_group.hide()
         layout.addWidget(self.product_group)
+        layout.addWidget(room_group)
         layout.addWidget(self.placement_warning)
         layout.addWidget(note)
         layout.addStretch()
@@ -900,8 +1672,15 @@ class MainWindow(QMainWindow):
         scroll.setObjectName("propertiesScroll")
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setWidget(wrapper)
-        self.properties_dock.setMinimumWidth(260)
+        self.properties_scroll = scroll
+        for button, tab_name in zip(tab_buttons, ("properties", "material", "details")):
+            button.setProperty("current", button is tab_buttons[0])
+            button.clicked.connect(lambda _checked=False, name=tab_name: self._show_inspector_tab(name))
+        self._inspector_tab = "properties"
+        self.properties_dock.setMinimumWidth(300)
+        self.properties_dock.setTitleBarWidget(QWidget())
         self.properties_dock.setWidget(scroll)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.properties_dock)
         for spin in [self.room_width_spin, self.room_depth_spin, self.room_height_spin, self.width_spin, self.height_spin,
@@ -909,6 +1688,8 @@ class MainWindow(QMainWindow):
                      self.position_x_spin, self.position_y_spin]:
             spin.valueChanged.connect(self._properties_changed)
         self.material_combo.currentTextChanged.connect(self._properties_changed)
+        self.material_combo.currentTextChanged.connect(self._update_finish_swatch)
+        self._update_finish_swatch(self.material_combo.currentText())
         for widget_signal in [
             self.opening_wall_combo.currentIndexChanged,
             self.opening_offset_spin.valueChanged,
@@ -923,10 +1704,82 @@ class MainWindow(QMainWindow):
         self.add_window_button.clicked.connect(lambda: self.begin_opening_placement("window"))
         self.remove_opening_button.clicked.connect(self.remove_selected_opening)
 
+    def _update_finish_swatch(self, finish: str) -> None:
+        colour = FINISH_COLOURS.get(finish, "#BDB2A5")
+        self.finish_swatch.setStyleSheet(
+            f"background: {colour}; border: 1px solid #D9CFC3; border-radius: 7px;"
+        )
+
+    def _show_inspector_tab(self, name: str) -> None:
+        """Switch the cabinet inspector without changing any project data."""
+        self._inspector_tab = name
+        for button in self.inspector_tab_buttons:
+            current = button.text().lower() == name
+            button.setProperty("current", current)
+            button.style().unpolish(button)
+            button.style().polish(button)
+        self.position_card.setVisible(name == "properties")
+        self.dimensions_card.setVisible(name == "properties")
+        self.configuration_card.setVisible(name in ("properties", "details"))
+        self.material_card.setVisible(name in ("properties", "material"))
+        if name == "material":
+            self.properties_scroll.ensureWidgetVisible(self.material_card)
+        else:
+            self.properties_scroll.verticalScrollBar().setValue(0)
+
+    def _refresh_inspector_context(self) -> None:
+        """Keep the visible editor and identity card aligned with the selected object."""
+        opening = self.project.selected_opening
+        product = next((item for item in self.project.placed_products
+                        if item.item_id == self.selected_product_id), None)
+        context = self._inspector_context
+        if opening is not None:
+            context = "opening"
+        elif product is not None:
+            context = "product"
+        elif context not in ("room", "wall"):
+            context = "cabinet"
+        self.cabinet_group.setVisible(context == "cabinet" and self.project.selected_cabinet is not None)
+        self.opening_group.setVisible(context == "opening")
+        self.product_group.setVisible(context == "product")
+        self.room_group.setVisible(context in ("room", "wall"))
+        self.inspector_identity.setVisible(context != "cabinet" or self.project.selected_cabinet is not None)
+        if context == "cabinet" and self.project.selected_cabinet is not None:
+            cabinet = self.project.selected_cabinet
+            definition = get_catalogue_item(cabinet.cabinet_type_id)
+            self.cabinet_id_label.setText(cabinet.cabinet_id)
+            self.cabinet_type_label.setText(definition.name)
+            self.cabinet_category_label.setText(f"{definition.category} · {cabinet.material}")
+            self.inspector_thumbnail.setPixmap(catalogue_thumbnail(definition, cabinet.material).scaled(
+                52, 52, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        elif context == "product" and product is not None:
+            definition = get_product(product.type_id)
+            self.cabinet_id_label.setText(product.item_id)
+            self.cabinet_type_label.setText(definition.name)
+            self.cabinet_category_label.setText(definition.library)
+            self.inspector_thumbnail.setPixmap(product_thumbnail(definition).scaled(
+                52, 52, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        else:
+            if context == "opening" and opening is not None:
+                title, detail, badge, icon = (opening.kind.title(),
+                    f"{WALL_LABELS[opening.wall_id]} · {opening.width} × {opening.height} mm",
+                    opening.opening_id, "front" if opening.kind == "door" else "grid")
+            elif context == "wall":
+                title, detail, badge, icon = (WALL_LABELS[self.selected_wall_id],
+                    f"Room wall · {wall_length(self.project.room, self.selected_wall_id)} mm",
+                    self.selected_wall_id, "layers")
+            else:
+                title, detail, badge, icon = ("Room", f"{self.project.room.width} × {self.project.room.depth} mm",
+                    "ROOM", "plan")
+            self.cabinet_id_label.setText(badge)
+            self.cabinet_type_label.setText(title)
+            self.cabinet_category_label.setText(detail)
+            self.inspector_thumbnail.setPixmap(outline_icon(icon, "#8C6546").pixmap(38, 38))
+
     def _build_bom(self) -> None:
         self.bom_dock = QDockWidget("COMPONENTS & BILL OF MATERIALS", self)
         self.bom_dock.setObjectName("bomDock")
-        self.bom_dock.setMinimumHeight(190)
+        self.bom_dock.setMinimumHeight(140)
         self.bom_table = QTableWidget(0, 8)
         self.bom_table.setHorizontalHeaderLabels(["Component", "Length", "Width", "Thickness", "Material", "Qty", "Cabinet ID", "Furniture Type"])
         self.bom_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -940,7 +1793,7 @@ class MainWindow(QMainWindow):
         self.bom_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.bom_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.bom_table.verticalHeader().setVisible(False)
-        self.bom_table.verticalHeader().setDefaultSectionSize(30)
+        self.bom_table.verticalHeader().setDefaultSectionSize(26)
         header = self.bom_table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
@@ -966,6 +1819,22 @@ class MainWindow(QMainWindow):
         status.addPermanentWidget(self.status_demo_label)
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt API
+        if watched is getattr(self, "design_header", None) and event.type() == QEvent.Type.Resize:
+            compact = event.size().width() < 800
+            for button, normal, small in (
+                (self.technical_view_button, 164, 110),
+                (self.plan_toggle_button, 174, 110),
+                (self.presentation_mode_button, 190, 132),
+            ):
+                desired = small if compact else normal
+                if button.width() != desired:
+                    button.setFixedWidth(desired)
+        if watched is getattr(self, "design_tools", None) and event.type() == QEvent.Type.Resize:
+            show_optional = event.size().width() >= 840
+            for caption in ("Snap", "Grid", "Interior", "Max"):
+                button = self.design_tool_buttons[caption]
+                if button.isHidden() == show_optional:
+                    button.setVisible(show_optional)
         delete_targets = {
             getattr(self, "plan_view", None),
             getattr(getattr(self, "plan_view", None), "viewport", lambda: None)(),
@@ -985,6 +1854,13 @@ class MainWindow(QMainWindow):
         return super().eventFilter(watched, event)
 
     def _set_presentation_view(self, enabled: bool) -> None:
+        if self.presentation_view_action.isChecked() != enabled:
+            self.presentation_view_action.blockSignals(True)
+            self.presentation_view_action.setChecked(enabled)
+            self.presentation_view_action.blockSignals(False)
+        if hasattr(self, "presentation_mode_button"):
+            self.presentation_mode_button.setChecked(enabled)
+            self.technical_view_button.setChecked(not self.design_stage.plan_expanded)
         self.presentation_camera_action.setEnabled(enabled)
         self.hide_room_walls_action.setEnabled(enabled)
         self.view3d.set_presentation_mode(enabled)
@@ -1057,12 +1933,22 @@ class MainWindow(QMainWindow):
 
     def _capture_render_scene(self, camera: str) -> bytes:
         previous = self.workspace_tabs.currentWidget()
+        temporary_presentation = camera == "Presentation" and not self.view3d.presentation_mode
+        previous_camera = self.view3d.plotter.camera_position if temporary_presentation else None
+        previous_angle = self.view3d.plotter.camera.view_angle if temporary_presentation else None
         if previous is not self.workspace_splitter:
             self.workspace_tabs.setCurrentWidget(self.workspace_splitter)
             QApplication.processEvents()
         try:
+            if temporary_presentation:
+                self.view3d.set_presentation_mode(True)
             return capture_view_png(self.view3d, camera)
         finally:
+            if temporary_presentation:
+                self.view3d.set_presentation_mode(False)
+                self.view3d.plotter.camera_position = previous_camera
+                self.view3d.plotter.camera.view_angle = previous_angle
+                self.view3d.plotter.render()
             if previous is not self.workspace_splitter:
                 self.workspace_tabs.setCurrentWidget(previous)
 
@@ -1139,6 +2025,17 @@ class MainWindow(QMainWindow):
         return True
 
     def _workspace_changed(self, index: int) -> None:
+        self._sync_workspace_rail()
+        if hasattr(self, "header_workspace_caption"):
+            caption = self.workspace_tabs.tabText(index).upper()
+            short_caption = {
+                "MANUFACTURING PREVIEW": "ENGINEERING",
+                "BOM & QUOTATION": "BOM & QUOTE",
+                "DESIGN ASSISTANT": "DESIGN ASSIST",
+                "REALISTIC RENDERING": "AI RENDERING",
+            }.get(caption, caption)
+            self.header_workspace_caption.setText(short_caption)
+            self.header_workspace_caption.setToolTip(caption)
         engineering_active = index == self.workspace_tabs.indexOf(self.manufacturing_preview)
         nesting_active = index == self.workspace_tabs.indexOf(self.sheet_nesting)
         documents_active = index == self.workspace_tabs.indexOf(self.documents_workspace)
@@ -1226,9 +2123,17 @@ class MainWindow(QMainWindow):
         self.plan_view.begin_wall_selection()
         self.statusBar().showMessage("Select one of the four room walls in the 2D plan; Esc cancels")
 
+    def select_room_for_inspector(self) -> None:
+        self._inspector_context = "room"
+        self.selected_product_id = None
+        self.project.select_opening(None)
+        self.refresh_visuals(reset_camera=False)
+        self.statusBar().showMessage("Selected room dimensions")
+
     def select_wall(self, wall_id: str) -> None:
         if wall_id not in WALL_IDS:
             return
+        self._inspector_context = "wall"
         self.selected_wall_id = wall_id
         self.selected_product_id = None
         self.project.select_opening(None)
@@ -1274,6 +2179,9 @@ class MainWindow(QMainWindow):
         if state is not None:
             self.project.select_opening(opening_id)
             self.selected_wall_id = state.wall_id
+            self._inspector_context = "opening"
+        elif self._inspector_context == "opening":
+            self._inspector_context = "room"
         self._set_dirty(True)
         self.refresh_all(reset_camera=False)
 
@@ -1284,6 +2192,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(str(error))
             return
         self.selected_wall_id = opening.wall_id
+        self._inspector_context = "opening"
         self.selected_product_id = None
         self._load_opening_controls()
         self.refresh_visuals(reset_camera=False)
@@ -1445,9 +2354,10 @@ class MainWindow(QMainWindow):
         self.cabinet_group.setEnabled(cabinet is not None)
         if cabinet is None:
             self.cabinet_id_label.setText("None")
+            self.inspector_thumbnail.clear()
             self.cabinet_type_label.setText("Add furniture from the Catalogue")
             self.cabinet_category_label.setText("—")
-            self.cabinet_group.setTitle("Selected cabinet — none")
+            self.cabinet_group.setTitle("")
             self._updating_controls = False
             self._load_opening_controls()
             return
@@ -1468,18 +2378,23 @@ class MainWindow(QMainWindow):
         self.position_y_spin.setValue(cabinet.position_y)
         self.cabinet_id_label.setText(cabinet.cabinet_id)
         catalogue_item = get_catalogue_item(cabinet.cabinet_type_id)
+        self.inspector_thumbnail.setPixmap(
+            catalogue_thumbnail(catalogue_item, cabinet.material).scaled(
+                49, 49, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+            )
+        )
         self.cabinet_type_label.setText(catalogue_item.name)
         self.cabinet_category_label.setText(catalogue_item.category)
         shows_doors = catalogue_item.front_style not in ("drawers", "open")
         shows_drawers = catalogue_item.front_style == "drawers"
         shows_shelves = catalogue_item.front_style != "sink"
-        self.door_label.setVisible(shows_doors)
-        self.door_spin.setVisible(shows_doors)
-        self.drawer_label.setVisible(shows_drawers)
-        self.drawer_spin.setVisible(shows_drawers)
-        self.shelf_label.setVisible(shows_shelves)
-        self.shelf_spin.setVisible(shows_shelves)
-        self.cabinet_group.setTitle(f"Selected cabinet — {cabinet.cabinet_id}")
+        for field_box, visible in ((self.door_field, shows_doors),
+                                   (self.drawer_field, shows_drawers),
+                                   (self.shelf_field, shows_shelves)):
+            field_box.setVisible(visible)
+        self.configuration_grid.removeWidget(self.shelf_field)
+        self.configuration_grid.addWidget(self.shelf_field, 0, 1 if not shows_drawers else 1)
+        self.cabinet_group.setTitle("")
         self._updating_controls = False
         self._load_opening_controls()
 
@@ -1532,12 +2447,21 @@ class MainWindow(QMainWindow):
         self._load_selected_controls()
         self.placement_warning.hide()
         self.status_project_label.setText(f"{self.project.name}  •  {self.project.project_type}")
+        self._refresh_design_labels()
         self.refresh_visuals(reset_camera)
 
     def _set_dirty(self, dirty: bool) -> None:
         self._dirty = dirty
         title = "kuchhe7 — Kitchen Design & Manufacturing Platform | AIZ INFOTECHS"
         self.setWindowTitle(f"{title}{' *' if dirty else ''}")
+        if hasattr(self, "header_dirty_label"):
+            self.header_dirty_label.setText("Unsaved changes" if dirty else "All changes saved")
+            self.header_dirty_label.setProperty("dirty", dirty)
+            self.header_dirty_label.style().unpolish(self.header_dirty_label)
+            self.header_dirty_label.style().polish(self.header_dirty_label)
+            self.header_saved_icon.setPixmap(top_label_pixmap(
+                "unsaved" if dirty else "saved", "#9A6237" if dirty else "#446449"
+            ))
 
     def _confirm_replace_unsaved(self, target_name: str = "sample kitchen") -> bool:
         if not self._dirty:
@@ -1583,6 +2507,9 @@ class MainWindow(QMainWindow):
         if hasattr(self, "documents_workspace"):
             self.documents_workspace.set_project(self.project)
         self._refresh_tree()
+        self._refresh_object_cards()
+        self._refresh_design_labels()
+        self._refresh_inspector_context()
         self._refresh_bom()
         cabinet_selected = self.project.selected_cabinet is not None and self.project.selected_opening is None
         object_selected = cabinet_selected or self.selected_product_id is not None
@@ -1593,10 +2520,173 @@ class MainWindow(QMainWindow):
         self.catalogue_add_button.setEnabled(len(self.project.cabinets) < MAX_CABINETS)
         self.remove_opening_action.setEnabled(self.project.selected_opening is not None)
 
+    def _refresh_design_labels(self) -> None:
+        if not hasattr(self, "header_project_title"):
+            return
+        self.header_project_title.setText(self.project.name)
+        self.header_project_meta.setText(
+            f"{self.project.project_type}  ·  {self.project.room.width} × {self.project.room.depth} mm"
+            f"  ·  {len(self.project.cabinets)} cabinets"
+            f"  ·  {len(self.project.room.openings)} openings"
+        )
+        self.plan_room_dimensions.setText(
+            f"{self.project.room.width:,} × {self.project.room.depth:,} mm"
+        )
+        self.sidebar_project_label.setText(self.project.name)
+        self.sidebar_project_label.setToolTip(self.project.name)
+        opening = self.project.selected_opening
+        if opening:
+            self.inspector_title.setText(f"{opening.opening_id} · {opening.kind.title()}")
+            self.inspector_subtitle.setText(f"{WALL_LABELS[opening.wall_id]} / Room opening")
+        elif self.selected_product_id:
+            product = next((item for item in self.project.placed_products
+                            if item.item_id == self.selected_product_id), None)
+            if product:
+                definition = get_product(product.type_id)
+                self.inspector_title.setText(f"{product.item_id} · {definition.name}")
+                self.inspector_subtitle.setText(definition.library)
+        elif self.project.selected_cabinet:
+            cabinet = self.project.selected_cabinet
+            definition = get_catalogue_item(cabinet.cabinet_type_id)
+            self.inspector_title.setText(f"{cabinet.cabinet_id} · {definition.name}")
+            self.inspector_subtitle.setText(f"{definition.category} / {self.project.project_type}")
+        else:
+            self.inspector_title.setText("Room")
+            self.inspector_subtitle.setText("Select an object to edit its properties")
+        self.inspector_title.hide()
+        self.inspector_subtitle.hide()
+        if self.selected_product_id:
+            product = next((item for item in self.project.placed_products
+                            if item.item_id == self.selected_product_id), None)
+            if product:
+                self.viewport_selection_title.setText(f"{product.item_id} · {get_product(product.type_id).name}")
+                self.viewport_selection_detail.setText(
+                    f"{product.width} × {product.height} × {product.depth} mm · Visual design object"
+                )
+                return
+        cabinet = self.project.selected_cabinet
+        if cabinet:
+            self.viewport_selection_title.setText(
+                f"{cabinet.cabinet_id} · {get_catalogue_item(cabinet.cabinet_type_id).name}"
+            )
+            self.viewport_selection_detail.setText(
+                f"{cabinet.material}  ·  {cabinet.width} × {cabinet.height} × {cabinet.depth} mm"
+            )
+        else:
+            self.viewport_selection_title.setText("Kitchen workspace")
+            self.viewport_selection_detail.setText("Select furniture in the plan or object list")
+
+    def _refresh_object_cards(self) -> None:
+        if not hasattr(self, "object_list"):
+            return
+        self.object_list.blockSignals(True)
+        self.object_list.clear()
+        self._cabinet_card_items = []
+        self._appliance_card_items = []
+        self.cabinet_count_label.setText(f"Cabinets ({len(self.project.cabinets)})")
+        selected_item = None
+        for cabinet in self.project.cabinets:
+            definition = get_catalogue_item(cabinet.cabinet_type_id)
+            preview = cached_cabinet_preview(definition.type_id, cabinet.material)
+            icon = QIcon()
+            icon.addPixmap(preview, QIcon.Mode.Normal)
+            icon.addPixmap(preview, QIcon.Mode.Selected)
+            card_name = definition.name.replace(" Cabinet", "").replace(" Unit", "")
+            item = QListWidgetItem(
+                icon,
+                f"{cabinet.cabinet_id}  {card_name}\n"
+                f"{cabinet.material}\nW{cabinet.width} H{cabinet.height} D{cabinet.depth}",
+            )
+            item.setData(Qt.ItemDataRole.UserRole, cabinet.cabinet_id)
+            item.setData(KIND_ROLE, "cabinet")
+            item.setData(NAME_ROLE, card_name)
+            item.setData(DETAIL_ROLE, f"W {cabinet.width} × H {cabinet.height} × D {cabinet.depth}")
+            item.setData(PREVIEW_ROLE, preview)
+            item.setData(TALL_ROLE, cabinet.height > 1300)
+            item.setSizeHint(QSize(0, 68))
+            item.setToolTip(f"{cabinet.cabinet_id} · {definition.name}\n"
+                            f"{cabinet.width} × {cabinet.height} × {cabinet.depth} mm · {cabinet.material}")
+            self.object_list.addItem(item)
+            self._cabinet_card_items.append(item)
+            item.setHidden(self._cabinet_cards_collapsed)
+            if cabinet.cabinet_id == self.project.selected_cabinet_id and not self.selected_product_id:
+                selected_item = item
+        appliances = products_for(APPLIANCES)
+        if appliances:
+            self.appliance_section_item = QListWidgetItem("Appliances")
+            self.appliance_section_item.setData(KIND_ROLE, "section")
+            self.appliance_section_item.setData(NAME_ROLE, "Appliances")
+            self.appliance_section_item.setData(EXPANDED_ROLE, not self._appliance_cards_collapsed)
+            self.appliance_section_item.setSizeHint(QSize(0, 49))
+            self.object_list.addItem(self.appliance_section_item)
+            for definition in appliances:
+                appliance = QListWidgetItem(definition.name)
+                appliance.setData(Qt.ItemDataRole.UserRole, f"catalogue:{definition.type_id}")
+                appliance.setData(KIND_ROLE, "appliance")
+                appliance.setData(NAME_ROLE, definition.name)
+                appliance.setData(DETAIL_ROLE, definition.category)
+                appliance_preview = appliance_card_preview(definition)
+                appliance.setData(PREVIEW_ROLE, appliance_preview if appliance_preview is not None
+                                  else product_thumbnail(definition))
+                appliance.setSizeHint(QSize(0, 61))
+                appliance.setToolTip(f"Browse {definition.name} in the product library")
+                self.object_list.addItem(appliance)
+                self._appliance_card_items.append(appliance)
+                appliance.setHidden(self._appliance_cards_collapsed)
+        if self.project.room.openings:
+            heading = QListWidgetItem("ROOM & OPENINGS")
+            heading.setData(KIND_ROLE, "section")
+            heading.setData(NAME_ROLE, "Room & Openings")
+            heading.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            heading.setSizeHint(QSize(0, 31))
+            self.object_list.addItem(heading)
+            for opening in self.project.room.openings:
+                item = QListWidgetItem(outline_icon("design", "#60796C"),
+                                       f"{opening.opening_id}   {opening.kind.title()}\n"
+                                       f"{opening.width} × {opening.height} mm")
+                item.setData(Qt.ItemDataRole.UserRole, f"opening:{opening.opening_id}")
+                item.setData(KIND_ROLE, "object")
+                item.setData(NAME_ROLE, f"{opening.opening_id} · {opening.kind.title()}")
+                item.setData(DETAIL_ROLE, f"{opening.width} × {opening.height} mm")
+                item.setData(PREVIEW_ROLE, outline_icon("project", "#7A7B70").pixmap(QSize(56, 46)))
+                item.setSizeHint(QSize(0, 58))
+                self.object_list.addItem(item)
+                if opening.opening_id == self.project.selected_opening_id:
+                    selected_item = item
+        if self.project.placed_products:
+            heading = QListWidgetItem("PLACED PRODUCTS")
+            heading.setData(KIND_ROLE, "section")
+            heading.setData(NAME_ROLE, "Placed Products")
+            heading.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            heading.setSizeHint(QSize(0, 31))
+            self.object_list.addItem(heading)
+            for product in self.project.placed_products:
+                definition = get_product(product.type_id)
+                preview = product_thumbnail(definition)
+                item = QListWidgetItem(QIcon(preview),
+                                       f"{product.item_id}   {definition.name}\n{definition.library}")
+                item.setData(Qt.ItemDataRole.UserRole, f"product:{product.item_id}")
+                item.setData(KIND_ROLE, "object")
+                item.setData(NAME_ROLE, f"{product.item_id} · {definition.name}")
+                item.setData(DETAIL_ROLE, definition.library)
+                item.setData(PREVIEW_ROLE, preview)
+                item.setSizeHint(QSize(0, 61))
+                self.object_list.addItem(item)
+                if product.item_id == self.selected_product_id:
+                    selected_item = item
+        if selected_item is not None:
+            self.object_list.setCurrentItem(selected_item)
+        self.object_list.blockSignals(False)
+        self.object_summary.setText(
+            f"{len(self.project.room.openings)} openings  ·  "
+            f"{len(self.project.placed_products)} placed products"
+        )
+
     def _refresh_tree(self) -> None:
         self.project_tree.clear()
         root = QTreeWidgetItem([self.project.name])
         room = QTreeWidgetItem([f"Room — {self.project.room.width} × {self.project.room.depth} mm"])
+        room.setData(0, Qt.ItemDataRole.UserRole, "room")
         walls = QTreeWidgetItem([f"Walls & openings ({len(self.project.room.openings)})"])
         selected_opening_item = None
         for wall in self.project.room.walls:
@@ -1646,7 +2736,14 @@ class MainWindow(QMainWindow):
         hardware_node.setExpanded(True)
         for index in range(walls.childCount()):
             walls.child(index).setExpanded(True)
-        if selected_opening_item is not None:
+        if self._inspector_context == "room":
+            self.project_tree.setCurrentItem(room)
+        elif self._inspector_context == "wall":
+            for index in range(walls.childCount()):
+                if walls.child(index).data(0, Qt.ItemDataRole.UserRole) == f"wall:{self.selected_wall_id}":
+                    self.project_tree.setCurrentItem(walls.child(index))
+                    break
+        elif selected_opening_item is not None:
             self.project_tree.setCurrentItem(selected_opening_item)
         elif selected_item is not None:
             self.project_tree.setCurrentItem(selected_item)
@@ -1669,7 +2766,9 @@ class MainWindow(QMainWindow):
 
     def _tree_item_clicked(self, item: QTreeWidgetItem) -> None:
         item_id = item.data(0, Qt.ItemDataRole.UserRole)
-        if isinstance(item_id, str) and item_id.startswith("opening:"):
+        if item_id == "room":
+            self.select_room_for_inspector()
+        elif isinstance(item_id, str) and item_id.startswith("opening:"):
             self.select_opening(item_id.split(":", 1)[1])
         elif isinstance(item_id, str) and item_id.startswith("wall:"):
             self.select_wall(item_id.split(":", 1)[1])
@@ -1683,6 +2782,7 @@ class MainWindow(QMainWindow):
             self.select_cabinet(item_id)
 
     def select_cabinet(self, cabinet_id: str) -> None:
+        self._inspector_context = "cabinet"
         self.selected_product_id = None
         self.selected_hardware_assignment_id = None
         try:
@@ -1696,6 +2796,28 @@ class MainWindow(QMainWindow):
         self.refresh_visuals()
         self.width_spin.setFocus()
         self.statusBar().showMessage(f"Selected cabinet {cabinet_id}")
+
+    def _select_cabinet_from_3d(self, cabinet_id: str) -> None:
+        if self.project.selected_cabinet_id == cabinet_id and self._inspector_context == "cabinet":
+            return
+        camera = self.view3d.plotter.camera_position
+        angle = self.view3d.plotter.camera.view_angle
+        self.select_cabinet(cabinet_id)
+        self.view3d.plotter.camera_position = camera
+        self.view3d.plotter.camera.view_angle = angle
+        self.view3d.plotter.reset_camera_clipping_range()
+        self.view3d.plotter.render()
+
+    def _select_product_from_3d(self, item_id: str) -> None:
+        if self.selected_product_id == item_id:
+            return
+        camera = self.view3d.plotter.camera_position
+        angle = self.view3d.plotter.camera.view_angle
+        self.select_product(item_id)
+        self.view3d.plotter.camera_position = camera
+        self.view3d.plotter.camera.view_angle = angle
+        self.view3d.plotter.reset_camera_clipping_range()
+        self.view3d.plotter.render()
 
     def _load_product_controls(self) -> None:
         product = next((item for item in self.project.placed_products if item.item_id == self.selected_product_id), None)
@@ -1713,6 +2835,11 @@ class MainWindow(QMainWindow):
             else "Unpriced sample. Manufacturing\ntreatment is metadata only."
         )
         self.product_treatment_group.setVisible(get_product(product.type_id).library == APPLIANCES)
+        show_rotation = get_product(product.type_id).library == PROPS
+        self.product_orientation_label.setVisible(show_rotation)
+        self.product_orientation_combo.setVisible(show_rotation)
+        self.product_orientation_combo.setCurrentIndex(
+            self.product_orientation_combo.findData(product.orientation_degrees))
         if get_product(product.type_id).library == APPLIANCES:
             self.product_commercial_combo.setCurrentText(product.commercial_treatment)
             self.product_manufacturing_combo.setCurrentText(product.manufacturing_treatment)
@@ -1727,6 +2854,7 @@ class MainWindow(QMainWindow):
         if not any(item.item_id == item_id for item in self.project.placed_products):
             return
         self.selected_product_id = item_id
+        self._inspector_context = "product"
         self.selected_hardware_assignment_id = None
         self.project.select_opening(None)
         self._load_opening_controls()
@@ -1823,6 +2951,8 @@ class MainWindow(QMainWindow):
             self.product_x_spin.value(), self.product_y_spin.value(), self.product_z_spin.value())
         candidate.width, candidate.depth, candidate.height = (
             self.product_width_spin.value(), self.product_depth_spin.value(), self.product_height_spin.value())
+        if get_product(candidate.type_id).library == PROPS:
+            candidate.orientation_degrees = int(self.product_orientation_combo.currentData())
         if get_product(candidate.type_id).library == APPLIANCES:
             candidate.commercial_treatment = self.product_commercial_combo.currentText()
             candidate.manufacturing_treatment = self.product_manufacturing_combo.currentText()
@@ -2031,6 +3161,7 @@ class MainWindow(QMainWindow):
             return
         self.project = Project.sample_kitchen("AIZ Sample Kitchen")
         self.selected_wall_id = "WEST"
+        self._inspector_context = "cabinet"
         self.project_path = None
         self.undo_stack.clear()
         self.plan_view.cancel_interaction(emit_signal=False)
@@ -2045,6 +3176,7 @@ class MainWindow(QMainWindow):
             return
         self.project = Project.complete_kitchen_demo("AIZ Complete Kitchen Demo")
         self.selected_wall_id = "WEST"
+        self._inspector_context = "cabinet"
         self.project_path = None
         self.undo_stack.clear()
         self.plan_view.cancel_interaction(emit_signal=False)
@@ -2072,6 +3204,7 @@ class MainWindow(QMainWindow):
             except (OSError, ValueError) as error:
                 QMessageBox.warning(self, "Company Price Setup", f"New project created without company prices: {error}")
             self.selected_wall_id = "WEST"
+            self._inspector_context = "room"
             self.project_path = None
             self.undo_stack.clear()
             self.plan_view.cancel_interaction(emit_signal=False)
@@ -2088,6 +3221,7 @@ class MainWindow(QMainWindow):
             return
         try:
             self.project = load_project(filename)
+            self._inspector_context = "opening" if self.project.selected_opening is not None else "cabinet"
             if self.project.selected_opening is not None:
                 self.selected_wall_id = self.project.selected_opening.wall_id
             self.project_path = Path(filename)
@@ -2115,6 +3249,62 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Save failed", str(error))
             return False
 
+    def _set_selected_construction_profile(self, profile_data: dict | None) -> None:
+        cabinet = self.project.selected_cabinet
+        if cabinet is None:
+            QMessageBox.information(self, "Construction Profile", "Select a cabinet first.")
+            return
+        candidate = deepcopy(self.project)
+        candidate.selected_cabinet.construction_profile = deepcopy(profile_data)
+        try:
+            candidate.validate()
+            generate_project_bom(candidate)
+        except ValueError as error:
+            QMessageBox.warning(self, "Invalid Construction Profile", str(error))
+            return
+        label = (f"{profile_data['profile_id']} / {profile_data['revision']}"
+                 if profile_data else "legacy demonstration rules")
+        reply = QMessageBox.question(
+            self, "Apply Construction Profile",
+            f"Apply {label} to {cabinet.cabinet_id}?\n\n"
+            "This changes its draft BOM and dependent draft outputs. "
+            "Construction specifications are demonstration-only, not factory approved.",
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self.project = candidate
+        self._set_dirty(True)
+        self.refresh_visuals()
+        self.statusBar().showMessage(f"{cabinet.cabinet_id}: {label} — {DEMO_STATUS}")
+
+    def apply_synthetic_construction_profile(self) -> None:
+        cabinet = self.project.selected_cabinet
+        if cabinet is None:
+            QMessageBox.information(self, "Construction Profile", "Select a cabinet first.")
+            return
+        self._set_selected_construction_profile(synthetic_profile_for(cabinet).to_dict())
+
+    def import_construction_profile(self) -> None:
+        if self.project.selected_cabinet is None:
+            QMessageBox.information(self, "Construction Profile", "Select a cabinet first.")
+            return
+        filename, _ = QFileDialog.getOpenFileName(
+            self, "Import demonstration construction profile", "", "JSON files (*.json)"
+        )
+        if not filename:
+            return
+        try:
+            data = json.loads(Path(filename).read_text(encoding="utf-8"))
+            profile = ConstructionProfile.from_dict(data)
+            profile.validate_for(self.project.selected_cabinet)
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, "Invalid Construction Profile", str(error))
+            return
+        self._set_selected_construction_profile(profile.to_dict())
+
+    def restore_legacy_construction_profile(self) -> None:
+        self._set_selected_construction_profile(None)
+
     def export_xlsx(self) -> None:
         filename, _ = QFileDialog.getSaveFileName(self, "Export Demonstration BOM", f"{self.project.name}-BOM.xlsx", "Excel Workbook (*.xlsx)")
         if filename:
@@ -2123,6 +3313,18 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(f"Exported BOM: {path}")
             except (OSError, ValueError) as error:
                 QMessageBox.critical(self, "Export failed", str(error))
+
+    def export_cut_list(self) -> None:
+        filename, _ = QFileDialog.getSaveFileName(
+            self, "Export Demonstration Cut List (not factory approved)",
+            f"{self.project.name}-cut-list.xlsx", "Excel Workbook (*.xlsx)"
+        )
+        if filename:
+            try:
+                path = export_cut_list_xlsx(self.project, filename)
+                self.statusBar().showMessage(f"Exported demonstration cut list: {path}")
+            except (OSError, ValueError) as error:
+                QMessageBox.critical(self, "Cut list export failed", str(error))
 
     def export_dxf(self) -> None:
         filename, _ = QFileDialog.getSaveFileName(
@@ -2161,6 +3363,21 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Exported {suffix}: {path}")
         except (OSError, ValueError) as error:
             QMessageBox.critical(self, "Engineering export failed", str(error))
+
+    def export_complete_kitchen_drawing(self) -> None:
+        filename, _ = QFileDialog.getSaveFileName(
+            self, "Export Complete Kitchen — one demonstration DXF",
+            "KUCHE7_COMPLETE_KITCHEN.dxf", "AutoCAD DXF (*.dxf)",
+        )
+        if not filename:
+            return
+        try:
+            path = export_complete_kitchen_dxf(self.project, filename)
+            self.statusBar().showMessage(
+                f"Exported one complete kitchen DXF: {path} — CNC machine compatibility not validated"
+            )
+        except (OSError, ValueError) as error:
+            QMessageBox.critical(self, "Complete kitchen export failed", str(error))
 
     def show_about(self) -> None:
         QMessageBox.about(self, "About kuchhe7", "<b>kuchhe7 Client Approval Demo v1.0.1</b><br>Kitchen Design & Manufacturing Platform<br><br>Interactive design, cabinet engineering and sheet nesting feasibility previews by AIZ INFOTECHS.<br>Nesting, drilling, clearances, DXF exports and construction rules are demonstration-only and not approved for production.")

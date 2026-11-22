@@ -27,7 +27,7 @@ class AIDesignWorkspace(QWidget):
         heading.setObjectName("canvasTitle")
         outer.addWidget(heading)
         self.mode_label = QLabel("Local rule-based demonstration — not AI generation unless a service is configured.")
-        self.mode_label.setStyleSheet("color: #147D83; font-weight: 600;")
+        self.mode_label.setStyleSheet("color: #60766F; font-weight: 600;")
         outer.addWidget(self.mode_label)
         split = QSplitter(Qt.Orientation.Horizontal)
         split.setChildrenCollapsible(False)

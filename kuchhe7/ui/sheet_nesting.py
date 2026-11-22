@@ -67,7 +67,7 @@ class SheetLayoutView(QGraphicsView):
         self.setObjectName("nestingSheetView")
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
-        self.setBackgroundBrush(QColor("#EEF2F4"))
+        self.setBackgroundBrush(QColor("#F5F2EC"))
         self._scene = QGraphicsScene(self)
         self.setScene(self._scene)
         self._scene.selectionChanged.connect(self._selection_changed)
@@ -81,11 +81,11 @@ class SheetLayoutView(QGraphicsView):
             0,
             settings.length_mm,
             settings.width_mm,
-            QPen(QColor("#172A3C"), 5),
+            QPen(QColor("#3B4848"), 5),
             QColor("#FCFCFA"),
         )
         sheet_rect.setZValue(-10)
-        margin_pen = QPen(QColor("#9CAAB3"), 2, Qt.PenStyle.DashLine)
+        margin_pen = QPen(QColor("#A9A59B"), 2, Qt.PenStyle.DashLine)
         self._scene.addRect(
             settings.margin_mm,
             settings.margin_mm,
@@ -106,7 +106,7 @@ class SheetLayoutView(QGraphicsView):
                     placement.placed_length_mm,
                     placement.placed_width_mm,
                 )
-                rect.setPen(QPen(QColor("#23414D"), 2))
+                rect.setPen(QPen(QColor("#3B4848"), 2))
                 rect.setBrush(colour)
                 rect.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
                 rect.setData(0, index)
@@ -119,7 +119,7 @@ class SheetLayoutView(QGraphicsView):
                     f"{' | ROT 90' if placement.rotated else ''}"
                 )
                 label = self._scene.addText(label_text, QFont("Segoe UI", 19, QFont.Weight.DemiBold))
-                label.setDefaultTextColor(QColor("#172A3C"))
+                label.setDefaultTextColor(QColor("#293136"))
                 label.setTextWidth(max(80, placement.placed_length_mm - 18))
                 label.setPos(placement.x_mm + 9, placement.y_mm + 6)
                 label.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
@@ -131,7 +131,7 @@ class SheetLayoutView(QGraphicsView):
             f"{settings.length_mm:g} x {settings.width_mm:g} mm  |  margin {settings.margin_mm:g} mm",
             QFont("Segoe UI", 24, QFont.Weight.Bold),
         )
-        title.setDefaultTextColor(QColor("#172A3C"))
+        title.setDefaultTextColor(QColor("#293136"))
         title.setPos(20, -58)
         self._scene.setSceneRect(-35, -75, settings.length_mm + 70, settings.width_mm + 110)
         self.fit_sheet()
