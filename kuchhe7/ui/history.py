@@ -41,6 +41,24 @@ class MoveCabinetCommand(QUndoCommand):
         self._apply_position(self.cabinet_id, *self.new_position)
 
 
+class RotateCabinetCommand(QUndoCommand):
+    """Undoable change of a cabinet's existing room orientation."""
+
+    def __init__(self, cabinet_id: str, old_angle: int, new_angle: int,
+                 apply_angle: Callable[[str, int], None]) -> None:
+        super().__init__(f"Rotate {cabinet_id} to {new_angle}°")
+        self.cabinet_id = cabinet_id
+        self.old_angle = old_angle
+        self.new_angle = new_angle
+        self._apply_angle = apply_angle
+
+    def undo(self) -> None:
+        self._apply_angle(self.cabinet_id, self.old_angle)
+
+    def redo(self) -> None:
+        self._apply_angle(self.cabinet_id, self.new_angle)
+
+
 class AddCabinetCommand(QUndoCommand):
     def __init__(self, cabinet: Cabinet, apply_addition: Callable[[Cabinet, bool], None]) -> None:
         super().__init__(f"Place {cabinet.cabinet_id}")

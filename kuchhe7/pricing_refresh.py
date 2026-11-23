@@ -13,7 +13,17 @@ from .quotation import calculate_quotation
 
 
 def master_revision(master: PriceMaster) -> str:
-    encoded = json.dumps(master.to_dict(), sort_keys=True, separators=(",", ":")).encode("utf-8")
+    payload = master.to_dict()
+    # Optional Stage 10 sheet metadata must not make an unchanged legacy
+    # project appear repriced merely because new default fields deserialize.
+    for record in payload["records"]:
+        if not record.get("material_id"):
+            record.pop("material_id", None)
+        if record.get("grain_direction") == "undefined":
+            record.pop("grain_direction", None)
+        if record.get("sheet_rotation_policy") == "allowed":
+            record.pop("sheet_rotation_policy", None)
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()[:16]
 
 
@@ -59,6 +69,10 @@ class PriceRefreshPreview:
 
 def _rate_value(row) -> str:
     detail = f", band {row.thickness_mm} x {row.band_width_mm} mm" if row.category == "Edge banding" else ""
+    if row.unit == "sheet":
+        detail += (f", sheet {row.sheet_length_mm} x {row.sheet_width_mm} mm, "
+                   f"finish {row.finish or 'unspecified'}, material ID {row.material_id or 'unspecified'}, "
+                   f"grain {row.grain_direction}, rotation {row.sheet_rotation_policy}")
     return f"{row.rate} {row.currency}/{row.unit} ({row.match_key}{detail})"
 
 

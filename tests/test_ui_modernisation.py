@@ -29,7 +29,12 @@ def test_premium_header_and_design_canvases_fit_client_window_sizes():
         app.processEvents()
         export_button = window.findChild(QToolButton, "headerExport")
         assert export_button is not None
-        assert window.export_dxf_action in export_button.menu().actions()
+        assert [action.text() for action in export_button.menu().actions()] == [
+            "Export BOM", "Export Quotation", "Export Project PDF", "Export CAD Drawing",
+        ]
+        file_menu = next(action.menu() for action in menu_button.menu().actions()
+                         if action.text().replace("&", "") == "File")
+        assert window.export_dxf_action in file_menu.actions()
         assert toolbar.height() <= 74
         assert window.plan_view.width() >= (200 if width <= 1366 else 220)
         assert window.view3d.width() > window.plan_view.width() * 2

@@ -66,6 +66,9 @@ class PricingWorkspace:
         self.band_width = QLineEdit(); self.band_width.setPlaceholderText("Edge banding width in mm")
         self.supplier_reference = QLineEdit()
         self.record_finish = QLineEdit()
+        self.material_id = QLineEdit(); self.material_id.setPlaceholderText("Stable sheet/material ID, if supplied")
+        self.sheet_grain = QComboBox(); self.sheet_grain.addItems(("undefined", "none", "lengthwise", "widthwise"))
+        self.sheet_rotation = QComboBox(); self.sheet_rotation.addItems(("allowed", "forbidden"))
         self.purchase_unit = QComboBox(); self.purchase_unit.addItems(["", *UNITS])
         self.selling_unit = QComboBox(); self.selling_unit.addItems(["", *UNITS])
         for index, (label, widget) in enumerate((("Stable ID", self.record_id), ("Category", self.category),
@@ -79,7 +82,10 @@ class PricingWorkspace:
                               ("Selling unit (metadata)", self.selling_unit),
                               ("Banding width (mm)", self.band_width),
                               ("Supplier reference", self.supplier_reference),
-                              ("Finish / colour reference", self.record_finish))):
+                              ("Finish / colour reference", self.record_finish),
+                              ("Sheet material ID", self.material_id),
+                              ("Sheet grain axis", self.sheet_grain),
+                              ("Panel rotation policy", self.sheet_rotation))):
             (left_form if index % 2 == 0 else right_form).addRow(label, widget)
         layout.addLayout(forms)
         buttons = QHBoxLayout()
@@ -131,7 +137,8 @@ class PricingWorkspace:
         for label, basis in (("Finished panel area", "finished_area"),
                              ("Cut panel area", "cut_area"),
                              ("Sheets by explicit yield", "sheet_yield"),
-                             ("Cabinet-only nesting sheets", "nesting_sheets")):
+                             ("Cabinet-only nesting sheets", "nesting_sheets"),
+                             ("Fresh project-wide sheet allocation", "project_nesting")):
             self.catalogue_basis.addItem(label, basis)
         self.catalogue_material_wastage = QLineEdit()
         self.catalogue_edge_wastage = QLineEdit()
@@ -272,11 +279,23 @@ class PricingWorkspace:
         self.markup.setText(rule.markup_percent)
         self.gross_margin.setText(rule.gross_margin_percent)
         self.charges.setText(", ".join(f"{key}={value}" for key, value in rule.charge_quantities.items()))
+        shared_sheet_cost = None
+        shared_sheet_error = ""
+        if rule.mode == "calculated" and rule.cost_basis == "project_nesting":
+            try:
+                from ..sheet_costing import allocate_project_sheet_cost, settings_for_pricing_rule
+                shared_sheet_cost = allocate_project_sheet_cost(
+                    self.project, settings_for_pricing_rule(rule),
+                    as_of=self.project.quotation.quotation_date,
+                    currency=self.project.quotation.currency)
+            except ValueError as error:
+                shared_sheet_error = str(error)
         cost = cost_cabinet(cabinet, self.project.price_master,
                             hardware_assignments=self.project.hardware_assignments,
                             charge_quantities=rule.charge_quantities,
                             currency=self.project.quotation.currency,
-                            as_of=self.project.quotation.quotation_date, policy=rule)
+                            as_of=self.project.quotation.quotation_date, policy=rule,
+                            project_sheet_cost=shared_sheet_cost)
         self.cost_table.setRowCount(len(cost.lines))
         for row, line in enumerate(cost.lines):
             for col, value in enumerate((line.component, line.cost_category,
@@ -290,7 +309,8 @@ class PricingWorkspace:
             f"Construction {cost.profile_id}/{cost.profile_revision} · Price Master {cost.price_master_revision}"
         )
         self.cost_total.setWordWrap(True)
-        self.cost_warning.setText("\n".join(cost.missing) if cost.missing else "BOM-based component subtotal; omitted categories are not assumed.")
+        self.cost_warning.setText("\n".join((*cost.missing, shared_sheet_error)) if cost.missing or shared_sheet_error
+                                  else "BOM-based component subtotal; omitted categories are not assumed.")
         price, reason = selling_price(cost, rule, currency=self.project.quotation.currency)
         self.sell_preview.setText(
             f"{source} — draft selling price: {price} {self.project.quotation.currency}" if price is not None
@@ -384,13 +404,16 @@ class PricingWorkspace:
                               (self.specification, record.specification),
                               (self.band_width, record.band_width_mm),
                               (self.supplier_reference, record.supplier_reference),
-                              (self.record_finish, record.finish)):
+                              (self.record_finish, record.finish),
+                              (self.material_id, record.material_id)):
             widget.setText(value)
         self.category.setCurrentText(record.category)
         self.unit.setCurrentText(record.unit)
         self.status.setCurrentText(record.status)
         self.purchase_unit.setCurrentText(record.purchase_unit)
         self.selling_unit.setCurrentText(record.selling_unit)
+        self.sheet_grain.setCurrentText(record.grain_direction)
+        self.sheet_rotation.setCurrentText(record.sheet_rotation_policy)
 
     def apply_record(self) -> None:
         if self.project is None:
@@ -402,7 +425,8 @@ class PricingWorkspace:
                              self.sheet_width.text().strip(), self.specification.text().strip(),
                              self.purchase_unit.currentText(), self.selling_unit.currentText(),
                              self.band_width.text().strip(), self.supplier_reference.text().strip(),
-                             self.record_finish.text().strip())
+                             self.record_finish.text().strip(), self.material_id.text().strip(),
+                             self.sheet_grain.currentText(), self.sheet_rotation.currentText())
         try:
             candidate = deepcopy(self.project.price_master)
             candidate.records = [row for row in candidate.records if row.record_id != record.record_id] + [record]

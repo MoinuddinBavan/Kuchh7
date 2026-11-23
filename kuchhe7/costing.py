@@ -46,7 +46,7 @@ class PricingRule:
             if not record_id.strip():
                 raise ValueError("Charge record ID is required.")
             nonnegative_decimal(quantity, f"Charge quantity for {record_id}")
-        if self.cost_basis not in ("finished_area", "cut_area", "sheet_yield", "nesting_sheets"):
+        if self.cost_basis not in ("finished_area", "cut_area", "sheet_yield", "nesting_sheets", "project_nesting"):
             raise ValueError("Unsupported material cost basis.")
         for label, value in (("Material wastage", self.material_wastage_percent),
                              ("Edge wastage", self.edge_wastage_percent),
@@ -56,9 +56,9 @@ class PricingRule:
         if self.cost_basis == "sheet_yield" and (not self.sheet_yield_percent or
                 not 0 < nonnegative_decimal(self.sheet_yield_percent, "Sheet yield") <= 100):
             raise ValueError("Sheet estimate needs an explicit yield between 0 and 100%.")
-        if self.cost_basis in ("sheet_yield", "nesting_sheets") and self.material_wastage_percent:
+        if self.cost_basis in ("sheet_yield", "nesting_sheets", "project_nesting") and self.material_wastage_percent:
             raise ValueError("Sheet costing already includes layout allowance; do not add material wastage twice.")
-        if self.cost_basis == "nesting_sheets":
+        if self.cost_basis in ("nesting_sheets", "project_nesting"):
             if not self.sheet_kerf_mm or not self.sheet_margin_mm:
                 raise ValueError("Nesting-sheet costing requires explicit kerf and edge margin.")
             nonnegative_decimal(self.sheet_kerf_mm, "Nesting kerf")
@@ -104,7 +104,8 @@ class CabinetCost:
 def cost_cabinet(cabinet, master: PriceMaster, *, hardware_assignments=(),
                  charge_quantities: dict[str, str] | None = None,
                  currency: str = "", as_of: str | None = None,
-                 policy: PricingRule | None = None) -> CabinetCost:
+                 policy: PricingRule | None = None,
+                 project_sheet_cost=None) -> CabinetCost:
     """Cost the authoritative BOM using an explicit selling-rule material basis.
 
     Default finished-area costing preserves the older demonstration workflow.
@@ -244,6 +245,32 @@ def cost_cabinet(cabinet, master: PriceMaster, *, hardware_assignments=(),
                 detail = (f"cabinet-isolated demonstration nesting: {layout.sheet_count} sheets; "
                           f"kerf {policy.sheet_kerf_mm} mm, margin {policy.sheet_margin_mm} mm")
             append(f"Board sheets: {material} {thickness:g} mm", record, sheets, detail, part_ids)
+
+    if basis == "project_nesting":
+        if project_sheet_cost is None:
+            missing.append("Current validated project-wide sheet allocation is required.")
+        else:
+            current_panels = expand_panel_instances(components)
+            from_layout = [item for item in project_sheet_cost.layout.eligible_panels
+                           if item.cabinet_id == cabinet.cabinet_id]
+            def signature(panel):
+                return (panel.instance_id, panel.length_mm, panel.width_mm,
+                        panel.material, panel.thickness_mm, panel.grain_direction,
+                        panel.profile_id or "LEGACY-DEMO", panel.profile_revision or "legacy")
+            if sorted(map(signature, current_panels)) != sorted(map(signature, from_layout)):
+                missing.append("Project-wide sheet allocation is stale for this cabinet.")
+            elif project_sheet_cost.currency != (currency or project_sheet_cost.currency):
+                missing.append("Project-wide sheet allocation currency differs from quotation.")
+            else:
+                for allocation in project_sheet_cost.cabinet_allocations(cabinet.cabinet_id):
+                    lines.append(CostLine(
+                        f"Shared sheet allocation: {allocation.material} {allocation.thickness_mm:g} mm",
+                        allocation.rate_record_id, "allocation", Decimal(1),
+                        allocation.amount, allocation.amount, allocation.currency,
+                        f"{allocation.allocated_sheets} purchased sheet(s) for group {allocation.sheet_id}; "
+                        "group cost apportioned by cut-panel area with exact cent reconciliation",
+                        allocation.material, allocation.finish, allocation.source_part_ids,
+                        "Board", allocation.sheet_id))
 
     for record_id, raw_quantity in (charge_quantities or {}).items():
         quantity = nonnegative_decimal(raw_quantity, f"Charge quantity for {record_id}")

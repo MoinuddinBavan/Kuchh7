@@ -155,10 +155,15 @@ def test_dialog_builds_pricing_on_same_screen(monkeypatch):
     dialog.name_edit.setText("Synthetic UI base")
     dialog.template_combo.setCurrentIndex(dialog.template_combo.findData("base_2_door"))
     dialog.finish_combo.setCurrentText("Cashmere")
+    dialog.profile_combo.setCurrentIndex(1)
+    dialog.cost_basis_combo.setCurrentIndex(dialog.cost_basis_combo.findData("cut_area"))
+    dialog.edge_wastage_edit.setText("5")
     dialog.approved_check.setChecked(True)
     item, rule = dialog.build()
     assert item.product_id == "SYNSTAGE9UI"
     assert rule.mode == "calculated" and rule.status == "approved"
+    assert item.construction_profile["profile_id"] == "K7-DEMO-base_2_door"
+    assert rule.cost_basis == "cut_area" and rule.edge_wastage_percent == "5"
     assert "SYN-BOARD-18" in dialog.preview.toPlainText()
     dialog.deleteLater()
     app.processEvents()

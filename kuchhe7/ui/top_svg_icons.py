@@ -17,6 +17,8 @@ _PATHS: dict[str, str] = {
     "select": '<path d="M4 3v17l4.7-4.6 3.3 5.9 2.5-1.4-3.3-5.8H18Z"/>',
     "place": '<circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/>',
     "move": '<path d="M12 2v20M2 12h20M9 5l3-3 3 3M9 19l3 3 3-3M5 9l-3 3 3 3M19 9l3 3-3 3"/>',
+    "rotate_left": '<path d="M4 8V3m0 5h5M4.8 8A8.5 8.5 0 1 1 3.5 13"/><path d="m11 8-3 4 3 4"/>',
+    "rotate_right": '<path d="M20 8V3m0 5h-5M19.2 8A8.5 8.5 0 1 0 20.5 13"/><path d="m13 8 3 4-3 4"/>',
     "duplicate": '<rect x="8" y="8" width="13" height="13" rx="1.5"/><path d="M16 8V4a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v11a1 1 0 0 0 1 1h4"/>',
     "delete": '<path d="M4 7h16M9 4h6M6 7l1 14h10l1-14M10 10v8M14 10v8"/>',
     "front": '<path d="M3 4h18v16H3zM12 4v16M6 17h3M15 17h3"/>',

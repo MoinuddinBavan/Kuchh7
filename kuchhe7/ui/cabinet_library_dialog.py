@@ -106,7 +106,8 @@ class CabinetLibraryDialog(QDialog):
         for label, basis in (("Finished panel area estimate", "finished_area"),
                              ("Cut panel area estimate", "cut_area"),
                              ("Sheet estimate (explicit yield)", "sheet_yield"),
-                             ("Cabinet-only nesting sheets", "nesting_sheets")):
+                             ("Cabinet-only nesting sheets", "nesting_sheets"),
+                             ("Fresh project-wide sheet allocation", "project_nesting")):
             self.cost_basis_combo.addItem(label, basis)
         self.material_wastage_edit = QLineEdit()
         self.edge_wastage_edit = QLineEdit()
@@ -291,6 +292,8 @@ class CabinetLibraryDialog(QDialog):
             lines.append(f"{cost.material_basis} BOM cost: {cost.total if cost.total is not None else 'INCOMPLETE'}")
             lines.append(f"Profile {cost.profile_id}/{cost.profile_revision}; Price Master {cost.price_master_revision}")
             lines.append(f"Draft selling price: {price if price is not None else 'INCOMPLETE'} {reason}")
+            if rule.cost_basis == "project_nesting":
+                lines.append("Project-wide sheet cost is calculated after placement from a fresh complete kitchen layout and approved sheet rates.")
             self.preview.setPlainText("\n".join(lines))
         except ValueError as error:
             self.preview.setPlainText(f"INCOMPLETE: {error}")

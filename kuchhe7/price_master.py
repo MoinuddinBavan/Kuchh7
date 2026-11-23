@@ -24,7 +24,8 @@ STATUSES = ("draft", "approved")
 PRICE_COLUMNS = ("record_id", "category", "match_key", "description", "unit", "rate", "currency",
                  "effective_date", "status", "thickness_mm", "sheet_length_mm", "sheet_width_mm",
                  "specification", "purchase_unit", "selling_unit", "band_width_mm",
-                 "supplier_reference", "finish")
+                 "supplier_reference", "finish", "material_id", "grain_direction",
+                 "sheet_rotation_policy")
 
 
 @dataclass
@@ -88,7 +89,7 @@ class CataloguePriceRule:
             if not key.strip():
                 raise ValueError("Charge record ID is required.")
             nonnegative_decimal(value, f"Charge quantity for {key}")
-        if self.cost_basis not in ("finished_area", "cut_area", "sheet_yield", "nesting_sheets"):
+        if self.cost_basis not in ("finished_area", "cut_area", "sheet_yield", "nesting_sheets", "project_nesting"):
             raise ValueError("Unsupported cabinet material cost basis.")
         for label, value in (("Material wastage", self.material_wastage_percent),
                              ("Edge wastage", self.edge_wastage_percent),
@@ -98,9 +99,9 @@ class CataloguePriceRule:
         if self.cost_basis == "sheet_yield":
             if not self.sheet_yield_percent or not 0 < nonnegative_decimal(self.sheet_yield_percent, "Sheet yield") <= 100:
                 raise ValueError("Sheet estimate needs an explicit yield between 0 and 100%.")
-        if self.cost_basis in ("sheet_yield", "nesting_sheets") and self.material_wastage_percent:
+        if self.cost_basis in ("sheet_yield", "nesting_sheets", "project_nesting") and self.material_wastage_percent:
             raise ValueError("Sheet costing already includes layout allowance; do not add material wastage twice.")
-        if self.cost_basis == "nesting_sheets":
+        if self.cost_basis in ("nesting_sheets", "project_nesting"):
             if not self.sheet_kerf_mm or not self.sheet_margin_mm:
                 raise ValueError("Nesting-sheet costing needs explicit kerf and margin settings.")
             nonnegative_decimal(self.sheet_kerf_mm, "Nesting kerf")
@@ -139,6 +140,9 @@ class PriceRecord:
     band_width_mm: str = ""
     supplier_reference: str = ""
     finish: str = ""
+    material_id: str = ""
+    grain_direction: str = "undefined"
+    sheet_rotation_policy: str = "allowed"
 
     def validate(self) -> None:
         if not self.record_id.strip() or not self.match_key.strip() or not self.description.strip():
@@ -169,6 +173,10 @@ class PriceRecord:
             raise ValueError(f"Approved board record {self.record_id} requires a material specification.")
         if self.unit == "sheet" and (not self.sheet_length_mm or not self.sheet_width_mm):
             raise ValueError(f"Sheet record {self.record_id} requires sheet dimensions.")
+        if self.grain_direction not in ("undefined", "none", "lengthwise", "widthwise"):
+            raise ValueError(f"Invalid sheet grain direction for {self.record_id}.")
+        if self.sheet_rotation_policy not in ("allowed", "forbidden"):
+            raise ValueError(f"Invalid sheet rotation policy for {self.record_id}.")
 
 
 @dataclass
@@ -190,8 +198,9 @@ class PriceMaster:
                 raise ValueError(f"Duplicate price record ID: {record.record_id}")
             ids.add(record.record_id)
             if record.status == "approved":
+                sheet_identity = (record.finish, record.material_id) if record.unit == "sheet" else ("", "")
                 key = (record.category, record.match_key.casefold(), record.thickness_mm,
-                       record.band_width_mm, record.unit, record.effective_date)
+                       record.band_width_mm, record.unit, record.effective_date, *sheet_identity)
                 if key in approved_keys:
                     raise ValueError(f"Multiple approved rates match {record.category} {record.match_key} {record.thickness_mm}.")
                 approved_keys.add(key)
@@ -305,6 +314,9 @@ def load_price_master(path: str | Path) -> PriceMaster:
                          row[key].date().isoformat() if key == "effective_date" and isinstance(row[key], datetime) else
                          row[key].isoformat() if key == "effective_date" and isinstance(row[key], date) else
                          str(row[key]).strip()) for key in PRICE_COLUMNS} for row in rows]
+    for row in normalized:
+        row["grain_direction"] = row["grain_direction"] or "undefined"
+        row["sheet_rotation_policy"] = row["sheet_rotation_policy"] or "allowed"
     master = PriceMaster.from_dict({"records": normalized})
     _validate_import_currency(master)
     _validate_import_product_ids(master)

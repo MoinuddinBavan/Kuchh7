@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QFrame,
     QGraphicsItem,
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QSplitter,
     QVBoxLayout,
@@ -26,7 +28,10 @@ from PySide6.QtWidgets import (
 
 from ..bom import generate_project_bom
 from ..models import Project
-from ..nesting import NestingGroup, NestingResult, PlacedPanel, SheetSettings, nest_project
+from ..nesting import (NestingGroup, NestingResult, PlacedPanel, SheetSettings,
+                       nest_project, project_panel_instances)
+from ..nesting_export import export_nesting_layout_dxf
+from ..nesting_validation import validate_nesting_result
 
 
 DISCLAIMER = "Demonstration nesting layout only. Not approved for CNC cutting or factory use."
@@ -42,21 +47,18 @@ MATERIAL_COLOURS = {
 
 
 def _project_nesting_signature(project: Project) -> tuple:
-    return tuple(
-        (
-            cabinet.cabinet_id,
-            cabinet.cabinet_type_id,
-            cabinet.width,
-            cabinet.height,
-            cabinet.depth,
-            cabinet.board_thickness,
-            cabinet.door_count,
-            cabinet.drawer_count,
-            cabinet.shelf_count,
-            cabinet.material,
-        )
-        for cabinet in project.cabinets
-    )
+    panels = tuple((panel.instance_id, panel.material, panel.finish, panel.thickness_mm,
+                    panel.length_mm, panel.width_mm, panel.grain_direction,
+                    panel.profile_id, panel.profile_revision)
+                   for panel in project_panel_instances(project))
+    sheet_specs = tuple(sorted((record.record_id, record.match_key, record.thickness_mm,
+                                record.finish, record.material_id, record.sheet_length_mm,
+                                record.sheet_width_mm, record.grain_direction,
+                                record.sheet_rotation_policy, record.status,
+                                record.effective_date)
+                               for record in project.price_master.records
+                               if record.category == "Board" and record.unit == "sheet"))
+    return panels, sheet_specs
 
 
 class SheetLayoutView(QGraphicsView):
@@ -76,27 +78,34 @@ class SheetLayoutView(QGraphicsView):
     def show_sheet(self, group: NestingGroup | None, sheet_index: int, settings: SheetSettings) -> None:
         self._scene.clear()
         self._placements = []
+        spec = group.sheet_specification if group else None
+        sheet_length = spec.length_mm if spec else settings.length_mm
+        sheet_width = spec.width_mm if spec else settings.width_mm
+        usable_x = settings.margin_mm + settings.trim_left_mm
+        usable_y = settings.margin_mm + settings.trim_top_mm
+        usable_length = sheet_length - 2 * settings.margin_mm - settings.trim_left_mm - settings.trim_right_mm
+        usable_width = sheet_width - 2 * settings.margin_mm - settings.trim_top_mm - settings.trim_bottom_mm
         sheet_rect = self._scene.addRect(
             0,
             0,
-            settings.length_mm,
-            settings.width_mm,
+            sheet_length,
+            sheet_width,
             QPen(QColor("#3B4848"), 5),
             QColor("#FCFCFA"),
         )
         sheet_rect.setZValue(-10)
         margin_pen = QPen(QColor("#A9A59B"), 2, Qt.PenStyle.DashLine)
         self._scene.addRect(
-            settings.margin_mm,
-            settings.margin_mm,
-            settings.length_mm - 2 * settings.margin_mm,
-            settings.width_mm - 2 * settings.margin_mm,
+            usable_x, usable_y, usable_length, usable_width,
             margin_pen,
         ).setZValue(-5)
 
         if group is not None and 0 <= sheet_index < len(group.sheets):
             sheet = group.sheets[sheet_index]
             self._placements = list(sheet.placements)
+            offcut_pen = QPen(QColor("#8CA88C"), 1, Qt.PenStyle.DashLine)
+            for x, y, length, width in sheet.free_rectangles:
+                self._scene.addRect(x, y, length, width, offcut_pen).setZValue(-2)
             base = QColor(MATERIAL_COLOURS.get(group.material, "#91B9BC"))
             for index, placement in enumerate(sheet.placements):
                 colour = base.lighter(103 + (index % 3) * 7)
@@ -113,10 +122,11 @@ class SheetLayoutView(QGraphicsView):
                 self._scene.addItem(rect)
 
                 label_text = (
-                    f"{placement.panel.cabinet_id} | {placement.panel.component_name} "
+                    f"{placement.panel.part_id or placement.panel.cabinet_id} | {placement.panel.component_name} "
                     f"#{placement.panel.instance_number}\n"
                     f"{placement.panel.length_mm:g} x {placement.panel.width_mm:g} mm"
                     f"{' | ROT 90' if placement.rotated else ''}"
+                    f"{' | grain ' + placement.panel.grain_direction if placement.panel.grain_direction not in ('none', 'undefined') else ''}"
                 )
                 label = self._scene.addText(label_text, QFont("Segoe UI", 19, QFont.Weight.DemiBold))
                 label.setDefaultTextColor(QColor("#293136"))
@@ -128,12 +138,13 @@ class SheetLayoutView(QGraphicsView):
 
         title = self._scene.addText(
             f"Sheet {sheet_index + 1 if group and group.sheets else 0}  |  "
-            f"{settings.length_mm:g} x {settings.width_mm:g} mm  |  margin {settings.margin_mm:g} mm",
+            f"{sheet_length:g} x {sheet_width:g} mm  |  "
+            f"{spec.sheet_id if spec else 'example sheet'}  |  gap {settings.part_gap_mm:g} mm",
             QFont("Segoe UI", 24, QFont.Weight.Bold),
         )
         title.setDefaultTextColor(QColor("#293136"))
         title.setPos(20, -58)
-        self._scene.setSceneRect(-35, -75, settings.length_mm + 70, settings.width_mm + 110)
+        self._scene.setSceneRect(-35, -75, sheet_length + 70, sheet_width + 110)
         self.fit_sheet()
 
     def fit_sheet(self) -> None:
@@ -209,6 +220,17 @@ class SheetNestingWidget(QWidget):
         self.sheet_width_spin = self._dimension_spin(1220, 300, 3000)
         self.kerf_spin = self._double_spin(3, 0, 20)
         self.margin_spin = self._double_spin(10, 0, 100)
+        self.clearance_spin = self._double_spin(0, 0, 100)
+        self.trim_left_spin = self._double_spin(0, 0, 150)
+        self.trim_right_spin = self._double_spin(0, 0, 150)
+        self.trim_top_spin = self._double_spin(0, 0, 150)
+        self.trim_bottom_spin = self._double_spin(0, 0, 150)
+        self.offcut_length_spin = self._double_spin(100, 0, 2000)
+        self.offcut_width_spin = self._double_spin(100, 0, 2000)
+        self.sheet_grain_combo = QComboBox()
+        self.sheet_grain_combo.addItems(("undefined", "none", "lengthwise", "widthwise"))
+        self.use_master_sheets = QCheckBox("Use approved project sheet specifications")
+        self.use_master_sheets.toggled.connect(self._settings_changed)
         self.rotation_check = QCheckBox("Allow 90-degree rotation")
         self.rotation_check.setChecked(True)
         self.grain_check = QCheckBox("Restrict rotation for grain direction")
@@ -219,17 +241,38 @@ class SheetNestingWidget(QWidget):
         self.margin_spin.valueChanged.connect(self._settings_changed)
         self.rotation_check.toggled.connect(self._settings_changed)
         self.grain_check.toggled.connect(self._settings_changed)
+        self.sheet_grain_combo.currentIndexChanged.connect(self._settings_changed)
+        for control in (self.clearance_spin, self.trim_left_spin, self.trim_right_spin,
+                        self.trim_top_spin, self.trim_bottom_spin,
+                        self.offcut_length_spin, self.offcut_width_spin):
+            control.valueChanged.connect(self._settings_changed)
         settings_form.addRow("Sheet length", self.sheet_length_spin)
         settings_form.addRow("Sheet width", self.sheet_width_spin)
         settings_form.addRow("Saw kerf", self.kerf_spin)
         settings_form.addRow("Edge margin", self.margin_spin)
+        settings_form.addRow("Minimum part clearance", self.clearance_spin)
+        settings_form.addRow("Trim left", self.trim_left_spin)
+        settings_form.addRow("Trim right", self.trim_right_spin)
+        settings_form.addRow("Trim top", self.trim_top_spin)
+        settings_form.addRow("Trim bottom", self.trim_bottom_spin)
+        settings_form.addRow("Example sheet grain", self.sheet_grain_combo)
+        settings_form.addRow(self.use_master_sheets)
+        settings_form.addRow("Reusable offcut min length", self.offcut_length_spin)
+        settings_form.addRow("Reusable offcut min width", self.offcut_width_spin)
         settings_form.addRow(self.rotation_check)
         settings_form.addRow(self.grain_check)
-        controls_layout.addWidget(settings_group)
+        settings_scroll = QScrollArea()
+        settings_scroll.setWidgetResizable(True)
+        settings_scroll.setMaximumHeight(350)
+        settings_scroll.setWidget(settings_group)
+        controls_layout.addWidget(settings_scroll)
         self.recalculate_button = QPushButton("Recalculate nesting")
         self.recalculate_button.setObjectName("primaryButton")
         self.recalculate_button.clicked.connect(self.recalculate)
         controls_layout.addWidget(self.recalculate_button)
+        self.export_layout_button = QPushButton("Export demonstration sheet layout (DXF)…")
+        self.export_layout_button.clicked.connect(self.export_layout)
+        controls_layout.addWidget(self.export_layout_button)
         splitter.addWidget(controls_panel)
 
         drawing_panel = QFrame()
@@ -270,6 +313,11 @@ class SheetNestingWidget(QWidget):
         self.stat_unplaced_area = QLabel("0.000 m²")
         self.stat_area = self.stat_total_area
         self.stat_utilization = QLabel("0.0%")
+        self.stat_usable_utilization = QLabel("0.0%")
+        self.stat_theoretical_sheets = QLabel("0")
+        self.stat_usable_area = QLabel("0.000 m²")
+        self.stat_residual_area = QLabel("0.000 m²")
+        self.stat_offcuts = QLabel("0")
         self.stat_utilization.setObjectName("utilizationValue")
         stats_form.addRow("Eligible panels", self.stat_eligible)
         stats_form.addRow("Placed panels", self.stat_placed)
@@ -279,6 +327,11 @@ class SheetNestingWidget(QWidget):
         stats_form.addRow("Placed panel area", self.stat_placed_area)
         stats_form.addRow("Unplaced panel area", self.stat_unplaced_area)
         stats_form.addRow("Allocated-sheet utilization", self.stat_utilization)
+        stats_form.addRow("Usable-area utilization", self.stat_usable_utilization)
+        stats_form.addRow("Theoretical minimum sheets", self.stat_theoretical_sheets)
+        stats_form.addRow("Usable sheet area", self.stat_usable_area)
+        stats_form.addRow("Non-panel usable residual", self.stat_residual_area)
+        stats_form.addRow("Candidate reusable offcuts", self.stat_offcuts)
         details_layout.addWidget(stats_group)
 
         part_group = QGroupBox("Selected part")
@@ -347,6 +400,14 @@ class SheetNestingWidget(QWidget):
             margin_mm=self.margin_spin.value(),
             allow_rotation=self.rotation_check.isChecked(),
             grain_rotation_restricted=self.grain_check.isChecked(),
+            clearance_mm=self.clearance_spin.value(),
+            trim_left_mm=self.trim_left_spin.value(),
+            trim_right_mm=self.trim_right_spin.value(),
+            trim_top_mm=self.trim_top_spin.value(),
+            trim_bottom_mm=self.trim_bottom_spin.value(),
+            min_offcut_length_mm=self.offcut_length_spin.value(),
+            min_offcut_width_mm=self.offcut_width_spin.value(),
+            sheet_grain_direction=self.sheet_grain_combo.currentText(),
         )
 
     def set_project(self, project: Project, force: bool = False) -> None:
@@ -371,11 +432,39 @@ class SheetNestingWidget(QWidget):
         if self.project is None:
             return
         try:
-            self.result = nest_project(self.project, self.current_settings())
+            options = {}
+            if self.use_master_sheets.isChecked():
+                if not self.project.quotation.currency:
+                    raise ValueError("Set the project quotation currency before selecting approved sheet rates.")
+                from ..sheet_costing import approved_sheet_specifications
+                specs, _ = approved_sheet_specifications(
+                    self.project.price_master, project_panel_instances(self.project),
+                    self.project.quotation.quotation_date,
+                    self.project.quotation.currency)
+                options = {"sheet_specs": specs, "require_sheet_specs": True}
+            result = nest_project(self.project, self.current_settings(), **options)
+            validate_nesting_result(result)
         except ValueError as error:
+            self.result = None
+            self._generated_signature = None
+            for label in (
+                self.stat_eligible, self.stat_placed, self.stat_unplaced,
+                self.stat_sheets, self.stat_total_area, self.stat_placed_area,
+                self.stat_unplaced_area, self.stat_utilization,
+                self.stat_usable_utilization, self.stat_theoretical_sheets,
+                self.stat_usable_area, self.stat_residual_area, self.stat_offcuts,
+            ):
+                label.setText("—")
+            self.group_list.clear()
+            self.sheet_combo.clear()
+            self.sheet_view.scene().clear()
+            self.sheet_summary.setText("No current sheet layout")
+            self.completeness_label.setText("Layout unavailable")
+            self._mark_stale("Settings invalid — recalculate")
             self.warning_list.clear()
             self.warning_list.addItem(str(error))
             return
+        self.result = result
         self._generated_signature = _project_nesting_signature(self.project)
         self.stale_label.setText("Layout current")
         self.stale_label.setProperty("stale", False)
@@ -391,7 +480,7 @@ class SheetNestingWidget(QWidget):
             for group in self.result.groups:
                 count = len(group.placements) + len(group.unplaced)
                 item = QListWidgetItem(
-                    f"{group.material} · {group.thickness_mm:g} mm\n"
+                    f"{group.material} / {group.finish or 'unspecified finish'} / {group.thickness_mm:g} mm\n"
                     f"{count} panels · {len(group.sheets)} sheet(s)"
                 )
                 item.setSizeHint(QSize(0, 45))
@@ -433,7 +522,10 @@ class SheetNestingWidget(QWidget):
         if group is not None and 0 <= index < len(group.sheets):
             sheet = group.sheets[index]
             area = sheet.placed_area_mm2
-            utilization = 100 * area / (settings.length_mm * settings.width_mm)
+            spec = group.sheet_specification
+            denominator = (spec.length_mm * spec.width_mm if spec else
+                           settings.length_mm * settings.width_mm)
+            utilization = 100 * area / denominator
             self.sheet_summary.setText(
                 f"{group.material} · {group.thickness_mm:g} mm  |  "
                 f"{len(sheet.placements)} parts  |  {area / 1_000_000:.3f} m²  |  "
@@ -447,11 +539,31 @@ class SheetNestingWidget(QWidget):
     def _fit_sheet(self) -> None:
         self.sheet_view.fit_sheet()
 
+    def export_layout(self) -> None:
+        if self.result is None or self.stale_label.text() != "Layout current":
+            self.warning_list.addItem("Recalculate a current valid layout before exporting.")
+            return
+        filename, _ = QFileDialog.getSaveFileName(
+            self, "Export demonstration sheet layout", "", "DXF drawing (*.dxf)")
+        if not filename:
+            return
+        try:
+            export_nesting_layout_dxf(self.result, filename)
+        except ValueError as error:
+            self.warning_list.addItem(str(error))
+
     def _populate_warnings(self, group: NestingGroup | None) -> None:
         self.warning_list.clear()
         if group is None:
             self.warning_list.addItem("No eligible panel groups were found.")
             return
+        spec = group.sheet_specification
+        if spec is not None and spec.status != "approved":
+            self.warning_list.addItem("Example sheet specification only; confirm purchased sheet and factory settings.")
+        if (spec is not None and spec.grain_direction == "undefined"
+                and any(item.panel.grain_direction in ("lengthwise", "widthwise")
+                        for item in group.placements)):
+            self.warning_list.addItem("Directional panel grain cannot be factory-validated until the sheet grain axis is supplied.")
         if not group.unplaced:
             self.warning_list.addItem("No unplaced parts in this material group.")
             return
@@ -473,6 +585,11 @@ class SheetNestingWidget(QWidget):
         self.stat_placed_area.setText(f"{result.placed_area_mm2 / 1_000_000:.3f} m²")
         self.stat_unplaced_area.setText(f"{result.unplaced_area_mm2 / 1_000_000:.3f} m²")
         self.stat_utilization.setText(f"{result.utilization_percent:.1f}%")
+        self.stat_usable_utilization.setText(f"{result.usable_utilization_percent:.1f}%")
+        self.stat_theoretical_sheets.setText(str(result.theoretical_minimum_sheets))
+        self.stat_usable_area.setText(f"{result.usable_area_mm2 / 1_000_000:.3f} m²")
+        self.stat_residual_area.setText(f"{result.usable_residual_area_mm2 / 1_000_000:.3f} m²")
+        self.stat_offcuts.setText(str(len(result.reusable_offcuts)))
         incomplete = result.unplaced_count > 0
         if result.eligible_count == 0:
             self.completeness_label.setText("No eligible panels")

@@ -56,6 +56,9 @@ from ..custom_catalogue import load_custom_catalogue, save_custom_catalogue
 from ..exports import export_bom_xlsx, export_front_elevation_dxf
 from ..engineering_dxf import CNC_PROTOTYPE, DRAWING_LABELS, export_engineering_dxf
 from ..complete_kitchen_dxf import export_complete_kitchen_dxf
+from ..wall_elevation_export import export_wall_elevations_dxf
+from ..nesting_export import export_nesting_layout_dxf
+from ..project_pdf import ProjectPdfOptions, export_project_pdf
 from ..cut_list import export_cut_list_xlsx
 from ..construction import ConstructionProfile, DEMO_STATUS, synthetic_profile_for
 from ..models import MATERIALS, MAX_CABINETS, PROJECT_TYPES, HardwareAssignment, Opening, PlacedProduct, Project
@@ -79,7 +82,10 @@ from .pricing_refresh_dialog import PricingRefreshDialog
 from .premium_icons import brand_mark, outline_icon
 from .top_svg_icons import AnchoredExportMenu, PremiumExportButton, top_icon, top_label_pixmap
 from .engineering_export_dialog import EngineeringExportDialog
-from .history import AddCabinetCommand, ApplyDesignProposalCommand, HardwareAssignmentCommand, MoveCabinetCommand, OpeningChangeCommand, ProductChangeCommand, RemoveCabinetCommand
+from .cad_export_dialog import (CadExportDialog, COMPLETE, LEGACY_ELEVATION,
+                                SHEET_LAYOUT, WALL_ELEVATIONS)
+from .project_pdf_dialog import ProjectPdfDialog
+from .history import AddCabinetCommand, ApplyDesignProposalCommand, HardwareAssignmentCommand, MoveCabinetCommand, RotateCabinetCommand, OpeningChangeCommand, ProductChangeCommand, RemoveCabinetCommand
 from .manufacturing_preview import ManufacturingPreviewWidget
 from .realistic_render_workspace import RealisticRenderWorkspace
 from .sheet_nesting import SheetNestingWidget
@@ -243,6 +249,12 @@ class MainWindow(QMainWindow):
         self.delete_cabinet_action = QAction("Delete selected object", self, triggered=self.remove_selected_object)
         self.duplicate_action = QAction("Duplicate Selected", self, triggered=self.duplicate_selected_object)
         self.duplicate_action.setShortcut(platform_shortcut("Ctrl+D"))
+        self.rotate_left_action = QAction("Rotate Left 90°", self, triggered=lambda: self.rotate_selected_cabinet(-90))
+        self.rotate_right_action = QAction("Rotate Right 90°", self, triggered=lambda: self.rotate_selected_cabinet(90))
+        self.rotate_left_action.setToolTip("Rotate the selected cabinet 90° counterclockwise in the room plan")
+        self.rotate_right_action.setToolTip("Rotate the selected cabinet 90° clockwise in the room plan")
+        self.rotate_left_action.setEnabled(False)
+        self.rotate_right_action.setEnabled(False)
         self.select_wall_action = QAction("Select Wall", self, triggered=self.begin_wall_selection)
         self.add_door_action = QAction("Add Door", self, triggered=lambda: self.begin_opening_placement("door"))
         self.add_window_action = QAction("Add Window", self, triggered=lambda: self.begin_opening_placement("window"))
@@ -283,6 +295,8 @@ class MainWindow(QMainWindow):
         self.complete_kitchen_export_action.setToolTip(
             "Export one drawing with plan, wall elevations, BOM schedules and panel contours; machine compatibility unverified"
         )
+        self.project_pdf_export_action = QAction("Export Project PDF", self, triggered=self.export_project_document)
+        self.cad_export_action = QAction("Export CAD Drawing", self, triggered=self.export_cad_drawing)
         self.manufacturing_preview_action = QAction(
             "Manufacturing Preview", self, shortcut=platform_shortcut("Ctrl+Shift+M"),
             triggered=self.show_manufacturing_preview,
@@ -357,6 +371,8 @@ class MainWindow(QMainWindow):
         self.presentation_camera_action.setIcon(icons(QStyle.StandardPixmap.SP_ComputerIcon))
         self.undo_action.setIcon(icons(QStyle.StandardPixmap.SP_ArrowBack))
         self.redo_action.setIcon(icons(QStyle.StandardPixmap.SP_ArrowForward))
+        self.rotate_left_action.setIcon(top_icon("rotate_left"))
+        self.rotate_right_action.setIcon(top_icon("rotate_right"))
 
         # Compact ribbon captions keep the full 1920 px demo layout readable;
         # menus and tooltips retain the descriptive action names above.
@@ -388,6 +404,8 @@ class MainWindow(QMainWindow):
         edit_menu = self.menuBar().addMenu("&Edit")
         edit_menu.addActions([self.undo_action, self.redo_action])
         edit_menu.addAction(self.duplicate_action)
+        rotate_menu = edit_menu.addMenu("Rotate Selected Cabinet")
+        rotate_menu.addActions([self.rotate_left_action, self.rotate_right_action])
         edit_menu.addSeparator()
         edit_menu.addAction("Select Cabinet", lambda: self.width_spin.setFocus())
         view_menu = self.menuBar().addMenu("&View")
@@ -548,24 +566,20 @@ class MainWindow(QMainWindow):
         export_button.setObjectName("headerExport")
         export_menu = AnchoredExportMenu(export_button)
         export_icon = top_icon("export", "#646A61")
-        for action in (self.export_xlsx_action, self.export_dxf_action,
-                       self.engineering_export_action, self.complete_kitchen_export_action):
-            action.setIcon(export_icon)
-        export_menu.addAction(self.export_xlsx_action)
-        for label, method in (
-            ("Export BOM (PDF)…", "export_bom_pdf"),
-            ("Export Quotation (XLSX)…", "export_quote_excel"),
-            ("Export Quotation (PDF)…", "export_quote_pdf"),
-            ("Export Issued Quotation (XLSX)…", "export_issued_quote_excel"),
-            ("Export Issued Quotation (PDF)…", "export_issued_quote_pdf"),
+        self.export_bom_menu = export_menu.addMenu("Export BOM")
+        self.export_quote_menu = export_menu.addMenu("Export Quotation")
+        for menu, entries in (
+            (self.export_bom_menu, (("XLSX…", "export_bom_excel"), ("PDF…", "export_bom_pdf"))),
+            (self.export_quote_menu, (("XLSX…", "export_quote_excel"), ("PDF…", "export_quote_pdf"))),
         ):
-            action = QAction(label, export_menu)
+            menu.setIcon(export_icon)
+            for label, method in entries:
+                action = QAction(label, menu)
+                action.triggered.connect(lambda checked=False, name=method: getattr(self.documents_workspace, name)())
+                menu.addAction(action)
+        for action in (self.project_pdf_export_action, self.cad_export_action):
             action.setIcon(export_icon)
-            action.triggered.connect(lambda checked=False, name=method: getattr(self.documents_workspace, name)())
             export_menu.addAction(action)
-        export_menu.addSeparator()
-        export_menu.addActions([self.complete_kitchen_export_action,
-                                self.export_dxf_action, self.engineering_export_action])
         export_button.setMenu(export_menu)
         export_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         add_header_shadow(export_button)
@@ -810,6 +824,7 @@ class MainWindow(QMainWindow):
             ("Select", "select", lambda: self._set_plan_expanded(True), "Select and edit objects in the 2D plan"),
             ("Place", "place", lambda: self.explorer_tabs.setCurrentWidget(self.library_page), "Browse products and place them in the 2D plan"),
             ("Move", "move", lambda: self._set_plan_expanded(True), "Move selected objects in the 2D plan"),
+            ("Rotate", "rotate_right", None, "Rotate the selected cabinet 90° left or right"),
             ("Snap", "snap", self.snap_action.trigger, self.snap_action.toolTip()),
             ("Grid", "grid", self.grid_snap_action.trigger, "Toggle the 100 mm placement grid"),
             ("Duplicate", "duplicate", self.duplicate_action.trigger, "Duplicate selected object"),
@@ -841,7 +856,15 @@ class MainWindow(QMainWindow):
                 else 60 if caption in ("Front", "Interior", "Reset", "Max", "Fit") else 62
             )
             button.setFixedHeight(52)
-            button.clicked.connect(handler)
+            if caption == "Rotate":
+                self.rotate_tool_button = button
+                rotate_options = QMenu(button)
+                rotate_options.addActions([self.rotate_left_action, self.rotate_right_action])
+                button.setMenu(rotate_options)
+                button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+                button.setEnabled(False)
+            else:
+                button.clicked.connect(handler)
             if caption in ("Snap", "Grid", "Interior", "Max"):
                 action = {"Snap": self.snap_action, "Grid": self.grid_snap_action,
                           "Interior": self.show_interior_action, "Max": self.maximize_3d_action}[caption]
@@ -1835,6 +1858,11 @@ class MainWindow(QMainWindow):
                 button = self.design_tool_buttons[caption]
                 if button.isHidden() == show_optional:
                     button.setVisible(show_optional)
+            for caption in ("Move", "Reset"):
+                button = self.design_tool_buttons[caption]
+                show = event.size().width() >= 700
+                if button.isHidden() == show:
+                    button.setVisible(show)
         delete_targets = {
             getattr(self, "plan_view", None),
             getattr(getattr(self, "plan_view", None), "viewport", lambda: None)(),
@@ -2345,6 +2373,41 @@ class MainWindow(QMainWindow):
             self._apply_cabinet_position,
         ))
 
+    def rotate_selected_cabinet(self, degrees: int) -> None:
+        """Rotate the selected cabinet around its existing placement corner."""
+        cabinet = self.project.selected_cabinet
+        if (cabinet is None or self.selected_product_id is not None
+                or self.project.selected_opening is not None
+                or self._inspector_context != "cabinet"):
+            self.statusBar().showMessage("Select a cabinet in the 2D plan or 3D view to rotate it")
+            return
+        if degrees not in (-90, 90):
+            raise ValueError("Cabinet rotation must be 90° left or right.")
+        # The room plan's Y axis increases downward, so +90° is clockwise.
+        angle = (cabinet.orientation_degrees + degrees) % 360
+        candidate = deepcopy(cabinet)
+        candidate.orientation_degrees = angle
+        try:
+            self.project.validate_cabinet_placement(candidate)
+        except ValueError as error:
+            self._show_placement_error(error)
+            return
+        self.undo_stack.push(RotateCabinetCommand(
+            cabinet.cabinet_id, cabinet.orientation_degrees, angle,
+            self._apply_cabinet_orientation,
+        ))
+
+    def _apply_cabinet_orientation(self, cabinet_id: str, angle: int) -> None:
+        cabinet = self.project.select_cabinet(cabinet_id)
+        cabinet.orientation_degrees = angle
+        self.project.validate_cabinet_placement(cabinet)
+        self._inspector_context = "cabinet"
+        self.selected_product_id = None
+        self.project.select_opening(None)
+        self._set_dirty(True)
+        self.refresh_all(reset_camera=False)
+        self.statusBar().showMessage(f"Rotated {cabinet_id} to {angle}°")
+
     def _load_selected_controls(self) -> None:
         self._updating_controls = True
         room, cabinet = self.project.room, self.project.selected_cabinet
@@ -2516,6 +2579,11 @@ class MainWindow(QMainWindow):
         self.remove_cabinet_action.setEnabled(object_selected)
         self.delete_cabinet_action.setEnabled(object_selected)
         self.duplicate_action.setEnabled(object_selected)
+        rotatable = (cabinet_selected and self.selected_product_id is None
+                     and self._inspector_context == "cabinet")
+        self.rotate_left_action.setEnabled(rotatable)
+        self.rotate_right_action.setEnabled(rotatable)
+        self.rotate_tool_button.setEnabled(rotatable)
         self.add_cabinet_action.setEnabled(len(self.project.cabinets) < MAX_CABINETS)
         self.catalogue_add_button.setEnabled(len(self.project.cabinets) < MAX_CABINETS)
         self.remove_opening_action.setEnabled(self.project.selected_opening is not None)
@@ -3378,6 +3446,126 @@ class MainWindow(QMainWindow):
             )
         except (OSError, ValueError) as error:
             QMessageBox.critical(self, "Complete kitchen export failed", str(error))
+
+    def _confirm_export_destination(self, filename: str) -> bool:
+        if not Path(filename).exists():
+            return True
+        return QMessageBox.question(
+            self, "Replace existing export?", f"Replace {Path(filename).name}?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        ) == QMessageBox.StandardButton.Yes
+
+    def _capture_project_pdf_view(self, camera: str, resolution: tuple[int, int]) -> bytes:
+        """Capture only the live 3D scene, restoring workspace, camera and selection."""
+        view = self.view3d
+        previous_workspace = self.workspace_tabs.currentWidget()
+        previous_mode = view.presentation_mode
+        previous_camera = view.plotter.camera_position
+        previous_angle = view.plotter.camera.view_angle
+        previous_axes = view.plotter.renderer.axes_enabled
+        if previous_workspace is not self.workspace_splitter:
+            self.workspace_tabs.setCurrentWidget(self.workspace_splitter)
+            QApplication.processEvents()
+        try:
+            if not previous_mode:
+                view.set_presentation_mode(True)
+            view.update_scene(self.project.room, self.project.cabinets, None,
+                              placed_products=self.project.placed_products)
+            view.plotter.hide_axes()
+            if camera == "Isometric":
+                room = self.project.room
+                ox = min((item.position_x for item in self.project.cabinets), default=0)
+                oy = min((item.position_y for item in self.project.cabinets), default=0)
+                cx = room.width / 2 - ox
+                view.plotter.camera_position = [
+                    (cx + room.width * .58, -oy - room.depth * .62, room.height * 1.08),
+                    (cx, room.depth * .65 - oy, room.height * .43),
+                    (0, 0, 1),
+                ]
+                view.plotter.camera.view_angle = 40
+                view.plotter.reset_camera_clipping_range()
+                view.plotter.render()
+                return capture_view_png(view, "Current", resolution)
+            return capture_view_png(view, camera, resolution)
+        finally:
+            if view.presentation_mode != previous_mode:
+                view.set_presentation_mode(previous_mode)
+            view.update_scene(self.project.room, self.project.cabinets,
+                              None if self.selected_product_id else self.project.selected_cabinet_id,
+                              placed_products=self.project.placed_products,
+                              selected_product_id=self.selected_product_id)
+            view.plotter.camera_position = previous_camera
+            view.plotter.camera.view_angle = previous_angle
+            if previous_axes:
+                view.plotter.show_axes()
+            else:
+                view.plotter.hide_axes()
+            view.plotter.reset_camera_clipping_range()
+            view.plotter.render()
+            if previous_workspace is not self.workspace_splitter:
+                self.workspace_tabs.setCurrentWidget(previous_workspace)
+
+    def export_project_document(self) -> None:
+        dialog = ProjectPdfDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        options: ProjectPdfOptions = dialog.options()
+        filename, _ = QFileDialog.getSaveFileName(
+            self, "Export Project PDF", f"{self.project.name}-Project.pdf", "PDF document (*.pdf)")
+        if not filename:
+            return
+        if not Path(filename).suffix:
+            filename += ".pdf"
+        if not self._confirm_export_destination(filename):
+            return
+        try:
+            result = export_project_pdf(self.project, filename, options,
+                                        capture_3d=self._capture_project_pdf_view)
+            self.statusBar().showMessage(f"Exported Project PDF: {result}")
+        except (OSError, ValueError, RuntimeError) as error:
+            QMessageBox.warning(self, "Project PDF export failed", str(error))
+
+    def export_cad_drawing(self) -> None:
+        sheet_ready = (self.sheet_nesting.result is not None
+                       and self.sheet_nesting.stale_label.text() == "Layout current")
+        dialog = CadExportDialog(self, sheet_available=sheet_ready)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        if dialog.drawing_format != "dxf":
+            QMessageBox.warning(self, "DWG unavailable", "Genuine DWG writing is not implemented. Choose DXF.")
+            return
+        drawing_type = dialog.drawing_type
+        suggested = f"{self.project.name}-{drawing_type}.dxf"
+        filename, _ = QFileDialog.getSaveFileName(
+            self, "Export CAD Drawing", suggested, "AutoCAD DXF (*.dxf)")
+        if not filename:
+            return
+        if not Path(filename).suffix:
+            filename += ".dxf"
+        if Path(filename).suffix.lower() != ".dxf":
+            QMessageBox.warning(self, "DXF file required",
+                                "Choose a .dxf filename. Genuine DWG export is not available.")
+            return
+        if not self._confirm_export_destination(filename):
+            return
+        try:
+            if drawing_type == COMPLETE:
+                result = export_complete_kitchen_dxf(self.project, filename)
+            elif drawing_type == WALL_ELEVATIONS:
+                result = export_wall_elevations_dxf(self.project, filename)
+            elif drawing_type == SHEET_LAYOUT:
+                if not sheet_ready:
+                    raise ValueError("Recalculate a current valid sheet layout before exporting.")
+                result = export_nesting_layout_dxf(self.sheet_nesting.result, filename)
+            elif drawing_type == LEGACY_ELEVATION:
+                result = export_front_elevation_dxf(self.project, filename)
+            else:
+                result = export_engineering_dxf(
+                    self.project, filename, drawing_type, cnc_profile=dialog.cnc_profile())
+            self.statusBar().showMessage(f"Exported demonstration CAD drawing: {result}")
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, "CAD drawing export failed", str(error))
 
     def show_about(self) -> None:
         QMessageBox.about(self, "About kuchhe7", "<b>kuchhe7 Client Approval Demo v1.0.1</b><br>Kitchen Design & Manufacturing Platform<br><br>Interactive design, cabinet engineering and sheet nesting feasibility previews by AIZ INFOTECHS.<br>Nesting, drilling, clearances, DXF exports and construction rules are demonstration-only and not approved for production.")

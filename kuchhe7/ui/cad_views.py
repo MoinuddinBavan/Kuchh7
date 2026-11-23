@@ -19,7 +19,7 @@ from .presentation_textures import (
     backsplash_texture, door_wood_texture, floor_texture, garden_texture, map_surface,
     plaster_texture, stone_texture, wood_texture,
 )
-from ..openings import opening_error, opening_furniture_conflict, wall_length
+from ..openings import WALL_THICKNESS_MM, opening_error, opening_furniture_conflict, wall_length
 from ..placement import placement_error, product_placement_error, snap_position
 from ..presentation import connected_base_runs
 
@@ -53,6 +53,42 @@ PLAN_FINISH_COLOURS = {
     "Cashmere / Greige Matte": "#C9BFB3",
     "Graphite Grey": "#656A6E",
 }
+
+
+def south_backsplash_rectangles(
+    room: Room, cabinets: list[Cabinet], *, lower_z: float = 760.0, upper_z: float = 1360.0,
+) -> list[tuple[float, float, float, float, float, float]]:
+    """Return South-wall backsplash pieces clear of real openings and their trim.
+
+    Coordinates are in room millimetres. Window exclusion includes the existing
+    sill projection; cabinet and opening dimensions remain untouched.
+    """
+    pieces = []
+    south_openings = [opening for opening in room.openings if opening.wall_id == "SOUTH"]
+    for run in connected_base_runs(cabinets):
+        if room.depth - run.y1 > WALL_THICKNESS_MM:
+            continue
+        cutouts = []
+        for opening in south_openings:
+            side = 38.0 if opening.kind == "window" else 42.0
+            bottom = 49.0 if opening.kind == "window" else 0.0
+            cutouts.append((
+                max(float(run.x0), opening.offset - side),
+                min(float(run.x1), opening.offset + opening.width + side),
+                max(lower_z, opening.elevation - bottom),
+                min(upper_z, opening.elevation + opening.height + side),
+            ))
+        cutouts = [(x0, x1, z0, z1) for x0, x1, z0, z1 in cutouts if x1 > x0 and z1 > z0]
+        xs = sorted({float(run.x0), float(run.x1), *(x for cut in cutouts for x in cut[:2])})
+        zs = sorted({lower_z, upper_z, *(z for cut in cutouts for z in cut[2:])})
+        for x0, x1 in zip(xs, xs[1:]):
+            for z0, z1 in zip(zs, zs[1:]):
+                midpoint_x, midpoint_z = (x0 + x1) / 2, (z0 + z1) / 2
+                if any(cx0 < midpoint_x < cx1 and cz0 < midpoint_z < cz1
+                       for cx0, cx1, cz0, cz1 in cutouts):
+                    continue
+                pieces.append((x0, x1, z0, z1, float(run.x0), float(run.x1)))
+    return pieces
 
 
 class RoomPlanView(QGraphicsView):
@@ -1409,14 +1445,20 @@ class Cabinet3DView(QWidget):
         self._add_environment_mesh(back_baseboard, name="presentation-back-junction", colour="#C9BDAE", wall=True)
         self._add_environment_mesh(side_baseboard, name="presentation-side-junction", colour="#C9BDAE", wall=True)
 
-        base_units = [item for item in self._cabinets if get_catalogue_item(item.cabinet_type_id).category in ("Base Cabinets", "Vanity") and item.elevation_z == 0]
-        if base_units:
-            bx0 = min(item.position_x for item in base_units) - origin_x
-            bx1 = max(item.position_x + item.footprint_width for item in base_units) - origin_x
-            backsplash = map_surface(self._box(bx0, bx1, y1 - 10, y1 + 2, 760, 1360), "front")
-            self._add_environment_mesh(backsplash, name="presentation-backsplash", colour="#FFFFFF",
-                                       texture=backsplash_texture(), wall=True,
-                                       opacity=0.98, ambient=0.90, diffuse=0.14, specular=0.10)
+        for index, (bx0, bx1, bz0, bz1, run_x0, run_x1) in enumerate(
+            south_backsplash_rectangles(self._room, self._cabinets)
+        ):
+            backsplash = self._box(bx0 - origin_x, bx1 - origin_x, y1 - 10, y1 + 2, bz0, bz1)
+            backsplash = map_surface(
+                backsplash, "front",
+                (run_x0 - origin_x, run_x1 - origin_x, y1 - 10, y1 + 2, 760, 1360),
+            )
+            self._add_environment_mesh(
+                backsplash,
+                name="presentation-backsplash" if index == 0 else f"presentation-backsplash-{index}",
+                colour="#FFFFFF", texture=backsplash_texture(), wall=True,
+                opacity=0.98, ambient=0.90, diffuse=0.14, specular=0.10,
+            )
 
         for run in connected_base_runs(self._cabinets):
             run_x0, run_x1 = run.x0 - origin_x, run.x1 - origin_x

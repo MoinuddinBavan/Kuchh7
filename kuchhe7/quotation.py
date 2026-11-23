@@ -126,9 +126,20 @@ def calculate_quotation(project: object) -> QuoteSummary:
     lines: list[QuoteLine] = []
     unpriced: list[str] = []
     incomplete: list[str] = []
+    shared_sheet_cost = None
+    shared_sheet_error = ""
+    shared_rules = [rule for cabinet in project.cabinets
+                    for rule, _ in [resolve_cabinet_pricing_rule(project, cabinet)]
+                    if rule is not None and rule.mode == "calculated"
+                    and rule.cost_basis == "project_nesting"]
+    shared_policies = {(rule.sheet_kerf_mm, rule.sheet_margin_mm, rule.sheet_allow_rotation)
+                       for rule in shared_rules}
+    if len(shared_policies) > 1:
+        shared_sheet_error = "Project-wide sheet costing needs one common kerf, margin and rotation policy."
 
     def append(item_id: str, description: str, category: str, billable: bool,
                cabinet=None, product=None) -> None:
+        nonlocal shared_sheet_cost, shared_sheet_error
         mode = "unconfigured"
         price = None
         if billable:
@@ -139,11 +150,24 @@ def calculate_quotation(project: object) -> QuoteSummary:
                     incomplete.append(f"{item_id}: {lookup_reason}")
             if cabinet is not None and rule is not None and rule.mode != "manual":
                 mode = rule.mode
+                if rule.mode == "calculated" and rule.cost_basis == "project_nesting":
+                    if shared_sheet_cost is None and not shared_sheet_error:
+                        try:
+                            from .sheet_costing import allocate_project_sheet_cost, settings_for_pricing_rule
+                            policy_settings = settings_for_pricing_rule(rule)
+                            shared_sheet_cost = allocate_project_sheet_cost(
+                                project, policy_settings, as_of=settings.quotation_date,
+                                currency=settings.currency)
+                        except ValueError as error:
+                            shared_sheet_error = str(error)
+                    if shared_sheet_error:
+                        incomplete.append(f"{item_id}: {shared_sheet_error}")
                 cost = cost_cabinet(cabinet, project.price_master,
                                     hardware_assignments=project.hardware_assignments,
                                     charge_quantities=rule.charge_quantities,
                                     currency=settings.currency,
-                                    as_of=settings.quotation_date, policy=rule)
+                                    as_of=settings.quotation_date, policy=rule,
+                                    project_sheet_cost=shared_sheet_cost)
                 price, reason = selling_price(cost, rule, currency=settings.currency)
                 if reason:
                     incomplete.append(f"{item_id}: {reason}")

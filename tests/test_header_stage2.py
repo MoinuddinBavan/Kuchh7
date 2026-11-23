@@ -43,14 +43,13 @@ def test_header_uses_live_project_and_save_state(tmp_path):
         assert window.project_path.is_file()
         assert window.header_dirty_label.text() == "All changes saved"
         export = window.findChild(QToolButton, "headerExport")
-        assert {window.export_xlsx_action, window.export_dxf_action,
-                window.engineering_export_action} <= set(export.menu().actions())
-        labels = {action.text() for action in export.menu().actions()}
-        assert {"Export BOM (PDF)…", "Export Quotation (XLSX)…", "Export Quotation (PDF)…",
-                "Export Issued Quotation (XLSX)…", "Export Issued Quotation (PDF)…"} <= labels
+        labels = [action.text() for action in export.menu().actions()]
+        assert labels == ["Export BOM", "Export Quotation", "Export Project PDF", "Export CAD Drawing"]
+        assert [action.text() for action in window.export_bom_menu.actions()] == ["XLSX…", "PDF…"]
+        assert [action.text() for action in window.export_quote_menu.actions()] == ["XLSX…", "PDF…"]
         called = []
         window.documents_workspace.export_bom_pdf = lambda: called.append("bom-pdf")
-        next(action for action in export.menu().actions() if action.text() == "Export BOM (PDF)…").trigger()
+        window.export_bom_menu.actions()[1].trigger()
         assert called == ["bom-pdf"]
         app_menu = window.findChild(QToolButton, "headerMenu").menu()
         assert {"File", "Edit", "View", "Design", "Manufacturing"} <= {
@@ -120,7 +119,7 @@ def test_undo_redo_and_view_controls_remain_connected():
         assert window.view3d.doors_visible
         tools = {button.text(): button for button in window.findChildren(QToolButton, "designToolButton")}
         assert set(tools) == {
-            "Select", "Place", "Move", "Snap", "Grid", "Duplicate", "Delete",
+            "Select", "Place", "Move", "Rotate", "Snap", "Grid", "Duplicate", "Delete",
             "Front", "Isometric", "Interior", "Reset", "Max", "Fit",
         }
         tools["Snap"].click()
